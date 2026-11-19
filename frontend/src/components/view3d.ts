@@ -358,6 +358,7 @@ export class Fp3dView3d extends LitElement {
     cleanButton: { attribute: false },
     roomLabels: { attribute: false },
     floorStack: { attribute: false },
+    decorativeFloors: { attribute: false },
     panelOpen: { attribute: false },
     controlsRight: { attribute: false },
     keepView: { attribute: false },
@@ -583,6 +584,8 @@ export class Fp3dView3d extends LitElement {
   declare roomLabels: boolean;
   /** Floors below an opened floor: dimmed, stacked (the house up to it) or hidden. */
   declare floorStack: FloorStack;
+  /** Decorative floors are inert (default); the editor works on them like on any other floor. */
+  declare decorativeFloors: boolean;
   private declare _thumbs: { floorId: string; url: string }[];
   /** The phone's house check is under way: no glass card may lie over the window it shows. */
   private declare _cardsQuiet: boolean;
@@ -854,6 +857,7 @@ export class Fp3dView3d extends LitElement {
     this.cleanButton = false;
     this.roomLabels = true;
     this.floorStack = "dim";
+    this.decorativeFloors = true;
     this._low = false;
     this.panelOpen = false;
     this.controlsRight = false;
@@ -1068,8 +1072,11 @@ export class Fp3dView3d extends LitElement {
         onContextLost: () => noteContextLost(GUARD_VERSION, startedAt, Date.now(), document.hidden),
         onRoomTap: (floorId, roomId) => this.fire("room-tap", { floorId, roomId }),
         onFloorTap: (floorId) => this.fire("floor-tap", { floorId }),
-        floorInfo: (floor) =>
-          floor.rooms.length === 1 ? translate(this.hass, "floor_rooms_one") : translate(this.hass, "floor_rooms", { n: floor.rooms.length }),
+        floorInfo: (floor) => {
+          // decoration is not counted (a floor with only a garden of one's own names no rooms)
+          const n = floor.rooms.filter((r) => !r.decorative).length;
+          return !n ? "" : n === 1 ? translate(this.hass, "floor_rooms_one") : translate(this.hass, "floor_rooms", { n });
+        },
         onBack: () => this.fire("back", {}),
         onDeviceTap: (id, x, y) => this.onDeviceTap(id, x, y),
         onDeviceHold: (id, x, y) => this.onDeviceHold(id, x, y),
@@ -1104,6 +1111,7 @@ export class Fp3dView3d extends LitElement {
       this.viewer.setFurnishTypes(this.furnishTypes ?? null);
       this.viewer.setAnchorCallback((i, x, y, on, scale, facing) => this.placeHolo(i, x, y, on, scale, facing));
       this.viewer.setFloorStack(this.floorStack);
+      this.viewer.setDecorativeFloors(this.decorativeFloors);
       this.viewer.setStats(this.showStats || diagnosticsActive());
       countView("3d");
       this.viewer.setAutoOrbit(this.autoOrbit ? 0.06 : 0);
@@ -1242,6 +1250,7 @@ export class Fp3dView3d extends LitElement {
     if (changed.has("keepRoof")) v.setKeepRoof(this.keepRoof);
     if (changed.has("hideRoof")) v.setHideRoof(this.hideRoof);
     if (changed.has("floorStack")) v.setFloorStack(this.floorStack);
+    if (changed.has("decorativeFloors")) v.setDecorativeFloors(this.decorativeFloors);
     // the newest setting wins: a style chosen anew for this screen (device, card, template) ends one set by voice or an action
     const restyled = (["theme", "themeEvening", "themeNight"] as const).some((k) => changed.has(k) && changed.get(k) !== undefined);
     if (restyled && this._styleOverride) this.setStyleOverride("reset", null);

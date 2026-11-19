@@ -9,14 +9,14 @@ import type { HassEntity } from "../types.ts";
 import { AdditiveBlending, CustomBlending, DstColorFactor, OneMinusDstColorFactor, NormalBlending, OneFactor, OneMinusSrcAlphaFactor, RingGeometry, Fog, CircleGeometry, Box3, CanvasTexture, ClampToEdgeWrapping, Color, BackSide, DoubleSide, FrontSide, Group, LineBasicMaterial, LineSegments, Mesh, MeshBasicMaterial, MultiplyBlending, OrthographicCamera, PerspectiveCamera, Points, PointsMaterial, PlaneGeometry, Raycaster, RepeatWrapping, Scene, SRGBColorSpace, TextureLoader, type Texture, Float32BufferAttribute, Uint32BufferAttribute, DynamicDrawUsage, BufferGeometry as Geometry, Vector2, Vector3, WebGLRenderer, WebGLRenderTarget, type Material, BufferGeometry } from "three";
 import type { Building, Floor, Furniture, Room, StartView, Vec2 } from "../model.ts";
 import { markLit, recolorLamps, SHADE_SENTINEL, shadeFactors } from "./lamp-colors.ts";
-import { centroid, GANG_TYPES, labelPoint, gateSpans, outdoorSurface, outdoorTopAt, outdoorZones, pointInPolygon, openingStyle, setTerrain, WALL_LAMP_Y, zonesOf } from "../model.ts";
+import { centroid, GANG_TYPES, homeFloors, isDecorative, labelPoint, liveZones, onDecorativeRoom, gateSpans, outdoorSurface, outdoorTopAt, outdoorZones, pointInPolygon, openingStyle, setTerrain, WALL_LAMP_Y, zonesOf } from "../model.ts";
 import { placeWallPlate } from "../geometry/walls.ts";
 import { buildEarth } from "./earth.ts";
 import { clampIntoRoom } from "../geometry/snap.ts";
 import { activeSections, dormerRise, roofRider, roofUnderAt, sectionAbove, sectionCutsBelow } from "../roof-sections.ts";
-import { buildFloorGeometry, SLAB, stairHoleParts, type FloorGeometry } from "./build.ts";
+import { buildFloorGeometry, buildLid, SLAB, stairHoleParts, type FloorGeometry } from "./build.ts";
 import { OrbitControls, type OrbitView } from "./controls.ts";
-import { makeFoldable, type FoldMasks } from "./fold.ts";
+import { makeFoldable, type FoldMasks, type FoldRole } from "./fold.ts";
 import { CameraProjections, PROJECTION_LAYER, type ProjectionSurface, type ProjectorPose } from "./projection.ts";
 import { pushPackLive } from "./furniture.ts";
 import { bindValue, hasLiveParts, liveGroups, slotEntity, type PartBind } from "../live-parts.ts";
@@ -439,6 +439,13 @@ interface FloorMaterials {
 
 interface FloorView {
   floor: Floor;
+  /** The lid on its decoration (a decorative floor's rooms, or the decorative rooms of a floor of one's own). */
+  lid: Mesh | null;
+  /**
+   * The decoration of a floor of one's own, drawn once more on its own: below an opened floor it stands as in the
+   * house view (whole, solid, with its lid) while the rest of the floor is dimmed; hidden otherwise.
+   */
+  stand: { group: Group; materials: FloorMaterials; frames: Mesh; blinds: Mesh; glass: Mesh } | null;
   /** Position in the stack, ordered by elevation. */
   rank: number;
   group: Group;
@@ -711,6 +718,8 @@ export class FloorplanViewer {
   private fanLast = 0;
   private fanTimer: ReturnType<typeof setTimeout> | undefined;
   private floorStack: FloorStack = "dim";
+  /** Decorative floors are inert (the views): no taps, labels, pins or floor pictures; the editor turns this off. */
+  private decorativeFloors = true;
   /** Floors by id, and per-frame bookkeeping so labels are only placed when something moved. */
   private floorMap = new Map<string, FloorView>();
   private labelsDirty = true;
@@ -1000,6 +1009,8 @@ export class FloorplanViewer {
     this.applyHouseLines();
     this.applyTargets(!animate);
     this.applyHighlight();
+    // the lamps in a neighbour's flat go with it while its floor is open
+    for (const fv of this.floors) this.buildLamps(fv);
     this.fit(animate ? 700 : 0);
   }
 
@@ -1009,6 +1020,59 @@ export class FloorplanViewer {
     if (mode === this.floorStack) return;
     this.floorStack = mode;
     this.applyTargets(false);
+  }
+
+  /** Whether decorative floors are inert (true, the views) or work like any other floor (the editor). */
+  setDecorativeFloors(on: boolean): void {
+    if (on === this.decorativeFloors) return;
+    this.decorativeFloors = on;
+    // the room pins are made with the floors: a building already shown is built again
+    if (this.building) this.rebuild();
+    this.labelsDirty = true;
+    this.invalidate();
+  }
+
+  /** A floor shown as decoration right now: drawn as it is, but without taps, labels, pins or floor pictures. */
+  private asDecoration(fv: FloorView): boolean {
+    return this.decorativeFloors && isDecorative(fv.floor);
+  }
+
+  /** The rooms of a floor shown as decoration now: all of a decorative floor's, else its decorative ones. */
+  private decorRoomsOf(floor: Floor): Room[] {
+    if (!this.decorativeFloors) return [];
+    return isDecorative(floor) ? floor.rooms : floor.rooms.filter((r) => r.decorative);
+  }
+
+  /** Whether a plan point of a floor lies in its decoration (a decorative floor's rooms, or a decorative room). */
+  private decorAtPoint(floorId: string, x: number, z: number): boolean {
+    const fv = this.floorMap.get(floorId);
+    return !!fv && this.decorRoomsOf(fv.floor).some((r) => r.points.length >= 3 && pointInPolygon([x, z], r.points));
+  }
+
+  /**
+   * Whether a floor's decoration is out of its floor right now: gone while the floor is open, standing on its own
+   * (FloorView.stand) below an opened floor.
+   */
+  private decorAway(floorId: string): boolean {
+    if (this.floorId === floorId) return true;
+    const fv = this.floorMap.get(floorId);
+    const open = this.floorId ? this.floorMap.get(this.floorId) : undefined;
+    return !!fv?.stand && !!open && fv.rank < open.rank && this.floorStack !== "stacked";
+  }
+
+  /** A device in decoration that is out of its floor right now: its lamp and halo go with it. */
+  private hiddenDecor(d: DeviceMarker): boolean {
+    return this.decorAway(d.floorId) && this.decorationAt(d.floorId, d.roomId ?? null);
+  }
+
+  /** Below an opened floor, decoration stands as it is: a decorative floor, or one whose rooms are all decorative. */
+  private standsBelow(fv: FloorView): boolean {
+    return this.asDecoration(fv) || (this.decorativeFloors && fv.floor.rooms.length > 0 && fv.floor.rooms.every((r) => r.decorative));
+  }
+
+  /** A room (or outdoor area) shown as decoration right now: on a decorative floor, or decorative itself. */
+  private decorationAt(floorId: string, roomId: string | null): boolean {
+    return this.decorativeFloors && !!this.building && onDecorativeRoom(this.building, floorId, roomId);
   }
 
   /** Leave the roof out altogether (a card option, D601): the house looks as if it had none. */
@@ -1222,8 +1286,11 @@ export class FloorplanViewer {
       const mine = list.filter((s) => s.floorId === fv.floor.id);
       // in the floor's own coordinates: its group already stands at the floor's elevation (#521)
       const y = 0.03;
+      const decor = this.decorRoomsOf(fv.floor).filter((r) => r.points.length >= 3);
       for (const src of mine) {
         if (!src.playing) continue;
+        // a speaker in decoration: its rings go with it while its floor is open
+        const inDecor = decor.some((r) => pointInPolygon([src.x, src.z], r.points));
         // three rings per speaker, staggered; the frame loop scales and fades them
         for (let i = 0; i < 3; i++) {
           const ring = new Mesh(
@@ -1232,7 +1299,7 @@ export class FloorplanViewer {
           );
           ring.rotation.x = -Math.PI / 2;
           ring.position.set(src.x, y + i * 0.002, src.z);
-          ring.userData = { sound: true, phase: i / 3, level: src.level };
+          ring.userData = { sound: true, phase: i / 3, level: src.level, decor: inDecor };
           ring.frustumCulled = false;
           g.add(ring);
         }
@@ -1267,6 +1334,7 @@ export class FloorplanViewer {
       if (!fv.soundGroup) continue;
       for (const c of fv.soundGroup.children) {
         if (!c.userData.sound) continue;
+        c.visible = !(c.userData.decor && this.decorAway(fv.floor.id));
         const phase = (t * 0.45 + (c.userData.phase as number)) % 1;
         const level = c.userData.level as number;
         const r = 0.25 + phase * (0.9 + 1.6 * level);
@@ -1711,11 +1779,12 @@ export class FloorplanViewer {
       // window glass and device displays follow like the light (#1070, #1071)
       const dimNear = nearOn && near.natural ? (near.dim ?? 0) : 0;
       glassLook(fv.materials.glass, nearOn && !!near.natural, dimNear, fv.o);
+      if (fv.stand) glassLook(fv.stand.materials.glass, nearOn && !!near.natural, dimNear);
       screenLook(fv.materials.screens, nearOn && !!near.natural, dimNear);
     }
     if (crossed) {
       const blending = lineBlending(nearOn ? near.base : this.theme);
-      for (const mat of [...this.floors.map((f) => f.materials.lines), ...(this.roof ? [this.roof.lines] : [])]) {
+      for (const mat of [...this.floors.flatMap((f) => (f.stand ? [f.materials.lines, f.stand.materials.lines] : [f.materials.lines])), ...(this.roof ? [this.roof.lines] : [])]) {
         mat.blending = blending;
         mat.needsUpdate = true;
       }
@@ -1735,7 +1804,7 @@ export class FloorplanViewer {
     setLightLook(light);
     if (this.building?.floors.some((f) => f.furniture.some((m) => m.type === "waste_bin" || hasFixedColors(m.type)))) this.rebuild();
     const blending = lineBlending(theme);
-    const lineMats = [...this.floors.map((f) => f.materials.lines), ...(this.roof ? [this.roof.lines] : [])];
+    const lineMats = [...this.floors.flatMap((f) => (f.stand ? [f.materials.lines, f.stand.materials.lines] : [f.materials.lines])), ...(this.roof ? [this.roof.lines] : [])];
     for (const m of lineMats) {
       m.blending = blending;
       m.needsUpdate = true;
@@ -1801,6 +1870,7 @@ export class FloorplanViewer {
       lightOnSurfaces(fv.glowMesh.material as MeshBasicMaterial, !!this.style.natural);
       const dim = this.style.natural ? (this.style.dim ?? 0) : 0;
       glassLook(fv.materials.glass, !!this.style.natural, dim, fv.o);
+      if (fv.stand) glassLook(fv.stand.materials.glass, !!this.style.natural, dim);
       screenLook(fv.materials.screens, !!this.style.natural, dim);
       const old = fv.group.getObjectByName("fp3d-contact-shadows");
       if (old) {
@@ -1824,6 +1894,11 @@ export class FloorplanViewer {
   /** Every frame: the shader learns where each floor lies now (floors move when they fan out or lift). */
   private stepFloorLevels(): void {
     for (const fv of this.floors) {
+      // a stand lies at its floor's own level, wherever the dimmed floor glides
+      if (fv.stand) {
+        fv.stand.group.getWorldPosition(this.levelTmp);
+        for (const m of Object.values(fv.stand.materials)) if (m && (m as Material).isMaterial) floorLevelUniform(m as Material).value = this.levelTmp.y;
+      }
       const levels = this.floorLevels.get(fv.floor.id);
       if (!levels?.length) continue;
       fv.group.getWorldPosition(this.levelTmp);
@@ -2803,6 +2878,11 @@ export class FloorplanViewer {
       // dragged corner with the 3D view beside the plan rebuilt (and recompiled) the house many times (#645)
       for (const m of Object.values(fv.materials)) this.retired.push(m);
       this.root.remove(fv.group);
+      // its stand shares the floor's geometry (disposed above); its own materials go the same way
+      if (fv.stand) {
+        for (const m of Object.values(fv.stand.materials)) this.retired.push(m);
+        this.root.remove(fv.stand.group);
+      }
     }
     this.floors = [];
     this.floorMap = new Map();
@@ -2885,7 +2965,7 @@ export class FloorplanViewer {
   private buildLightSurface(fv: FloorView): void {
     this.usePalette();
     const cell = this.lowQuality ? 0.5 : 0.25;
-    const surface = buildLightSurface(fv.floor, fv.geo.walls2d, fv.geo.wallBuckets, fv.geo.openings, cell, fv.geo.holes, fv.geo.roofUnder);
+    const surface = buildLightSurface(fv.floor, fv.geo.walls2d, fv.geo.wallBuckets, fv.geo.openings, cell, fv.geo.holes, fv.geo.roofUnder, fv.geo.wallDecor);
     // rooms joined by "no wall" form one zone: a lamp lights the open neighbour as if it stood in the same room
     const zones = lightZonesOf(fv.floor, fv.geo.openRooms);
     fv.lightZones = zones.some((z, i) => z !== i) ? zones : null;
@@ -3092,14 +3172,15 @@ export class FloorplanViewer {
     fv.glowMesh.visible = n > 0;
   }
 
-  private makeMaterials(mask: FoldMasks): FloorMaterials {
+  /** A floor's materials; `role` "decor" makes walls, lines and openings draw only decoration (its stand). */
+  private makeMaterials(mask: FoldMasks, role?: FoldRole): FloorMaterials {
     return {
       // a floor is never cyan of its own: an own accent colour turned the heatmap's cool rooms into it (#558)
       floor: themed(new MeshBasicMaterial({ vertexColors: true }), this.themeUniform, false, false),
       pattern: patternMaterial(this.patternTexture, this.themeUniform),
       // the walls sit a hair behind their glowing edges in depth: lines lying on a wall's top or face no longer
       // flicker in and out at corners and joints as the view turns (#417)
-      wall: themed(makeFoldable(new MeshBasicMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }), mask, "solid"), this.themeUniform),
+      wall: themed(makeFoldable(new MeshBasicMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }), mask, role ?? "solid"), this.themeUniform),
       glassWall: makeFoldable(new MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }), mask, "glass"),
       // result = floor colour * vertex colour (white leaves the floor untouched)
       shadow: new MeshBasicMaterial({
@@ -3114,7 +3195,7 @@ export class FloorplanViewer {
         polygonOffsetFactor: -1,
       }),
       lines: themed(
-        makeFoldable(new LineBasicMaterial({ vertexColors: true, transparent: true, blending: lineBlending(this.theme), depthWrite: false }), mask),
+        makeFoldable(new LineBasicMaterial({ vertexColors: true, transparent: true, blending: lineBlending(this.theme), depthWrite: false }), mask, role),
         this.themeUniform,
         true,
       ),
@@ -3133,12 +3214,13 @@ export class FloorplanViewer {
         mask,
         "solid",
       ),
-      frames: themed(makeFoldable(new MeshBasicMaterial({ vertexColors: true, side: DoubleSide }), mask), this.themeUniform),
+      frames: themed(makeFoldable(new MeshBasicMaterial({ vertexColors: true, side: DoubleSide }), mask, role), this.themeUniform),
       glass: makeFoldable(
         new MeshBasicMaterial({ vertexColors: true, transparent: true, blending: AdditiveBlending, depthWrite: false, side: DoubleSide, forceSinglePass: true }),
         mask,
+        role,
       ),
-      blinds: themed(makeFoldable(new MeshBasicMaterial({ map: this.blindTexture, vertexColors: true, side: DoubleSide }), mask), this.themeUniform),
+      blinds: themed(makeFoldable(new MeshBasicMaterial({ map: this.blindTexture, vertexColors: true, side: DoubleSide }), mask, role), this.themeUniform),
       water: themed(new MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.5, depthWrite: false, side: DoubleSide, forceSinglePass: true }), this.themeUniform),
       flow: flowMaterial(this.flowTime),
       pipeLine: pipeLineMaterial(this.flowTime),
@@ -3209,8 +3291,8 @@ export class FloorplanViewer {
             return y === null ? null : y - floor.elevation;
           }
         : undefined;
-      const geo = this.dual(() => buildFloorGeometry(withVehicles(floor, this.parked), b.settings.wall_exterior, b.settings.wall_interior, stairHoleParts(b.floors, floor), garden, roofUnder, floor.id === groundId ? around : null, roofRise));
-      const mask: FoldMasks = { standing: { value: 0xffff }, glass: { value: 0 } };
+      const geo = this.dual(() => buildFloorGeometry(withVehicles(floor, this.parked), b.settings.wall_exterior, b.settings.wall_interior, stairHoleParts(b.floors, floor), garden, roofUnder, floor.id === groundId ? around : null, roofRise, new Set(this.decorRoomsOf(floor).map((r) => r.id))));
+      const mask: FoldMasks = { standing: { value: 0xffff }, glass: { value: 0 }, decor: { value: 1 } };
       const materials = this.makeMaterials(mask);
       const group = new Group();
       const floorMesh = new Mesh(geo.floor, materials.floor);
@@ -3289,8 +3371,15 @@ export class FloorplanViewer {
         ? [new Mesh(earthGeo.earth.geometry(), materials.earth), new Mesh(earthGeo.wells.geometry(), materials.earthWell), new LineSegments(earthGeo.lines.geometry(), materials.earthLines)]
         : [];
       for (const m of earthParts) m.userData.earth = true;
+      // decoration gets a lid on its walls: nothing to look into from above (it reads as a flat roof where it reaches
+      // past the floor above); in a decorative attic the roof is the ceiling of what lies under its slopes instead (it
+      // sits right on it, see placeRoof): a lid at full height floated over the knee walls and stuck out through them,
+      // and under the ridge it still showed through the roof
+      const decor = this.decorRoomsOf(floor).filter((r) => !roofUnder || !isDecorative(floor) || r.points.length < 3 || roofUnder(...centroid(r.points)) === null);
+      const lid = decor.length ? [new Mesh(buildLid(decor, floor.height), materials.floor)] : [];
       group.add(
         floorMesh,
+        ...lid,
         shadowMesh,
         pattern,
         glowMesh,
@@ -3337,6 +3426,17 @@ export class FloorplanViewer {
       let bbox: FloorView["bbox"] = null;
       // the rooms, and the outdoor areas acting as rooms (#100) with their names
       for (const room of zonesOf(floor)) {
+        // the floor's box (the floor label sits beside it): every indoor room, decoration too
+        if (!room.outdoor)
+          for (const [x, z] of room.points) {
+            bbox ??= { x0: x, x1: x, z0: z, z1: z };
+            bbox.x0 = Math.min(bbox.x0, x);
+            bbox.x1 = Math.max(bbox.x1, x);
+            bbox.z0 = Math.min(bbox.z0, z);
+            bbox.z1 = Math.max(bbox.z1, z);
+          }
+        // decoration gets no name pin
+        if (this.decorativeFloors && room.decorative) continue;
         const pin = document.createElement("button");
         pin.className = "fp3d-pin";
         pin.dataset.room = room.id;
@@ -3346,17 +3446,28 @@ export class FloorplanViewer {
         this.labels.append(pin);
         const [cx, cz] = labelPoint(room);
         roomPins.push({ pin, room, cx, cz });
-        if (room.outdoor) continue;
-        for (const [x, z] of room.points) {
-          bbox ??= { x0: x, x1: x, z0: z, z1: z };
-          bbox.x0 = Math.min(bbox.x0, x);
-          bbox.x1 = Math.max(bbox.x1, x);
-          bbox.z0 = Math.min(bbox.z0, z);
-          bbox.z1 = Math.max(bbox.z1, z);
-        }
+      }
+      // decoration on a floor of one's own stands on its own below an opened floor (FloorView.stand): the same
+      // geometry and materials made the same way, only drawing the decoration
+      let stand: FloorView["stand"] = null;
+      if (decor.length && !isDecorative(floor)) {
+        const sm = this.makeMaterials(mask, "decor");
+        const sg = new Group();
+        sg.visible = false;
+        sg.position.y = floor.elevation;
+        const sf = new Mesh(framesMesh.geometry, sm.frames);
+        const sb = new Mesh(blindsMesh.geometry, sm.blinds);
+        const sgl = new Mesh(glassMesh.geometry, sm.glass);
+        sgl.renderOrder = glassMesh.renderOrder;
+        for (const m of [sf, sb, sgl]) m.frustumCulled = false;
+        sg.add(new Mesh(geo.walls, sm.wall), new LineSegments(geo.lines, sm.lines), sf, sb, sgl, new Mesh(lid[0].geometry, sm.floor));
+        this.root.add(sg);
+        stand = { group: sg, materials: sm, frames: sf, blinds: sb, glass: sgl };
       }
       this.floors.push({
         floor,
+        lid: lid[0] ?? null,
+        stand,
         rank: ordered.indexOf(floor),
         group,
         geo,
@@ -3611,7 +3722,9 @@ export class FloorplanViewer {
       const apart = ride.ty > 0 ? Math.min(1, ride.y / ride.ty) : this.explode && this.floorId === null ? 1 : 0;
       // pulled apart, the roof clears the floor it rides on: a loft inside the roof shows its walls below it (#1169)
       const clear = ride.floor.elevation + ride.floor.height + ROOF_CLEAR - (fv.floor.elevation + part.base + part.low);
-      const gap = part.lift ? apart * Math.max(ROOF_GAP, Math.min(clear, ride.floor.height + ROOF_CLEAR)) : 0;
+      // decoration under the roof (an attic of others) is closed by it: the roof stays on its walls, pulled apart too
+      const closes = this.decorativeFloors && isDecorative(ride.floor);
+      const gap = part.lift && !closes ? apart * Math.max(ROOF_GAP, Math.min(clear, ride.floor.height + ROOF_CLEAR)) : 0;
       part.group.position.y = fv.floor.elevation + ride.y + part.base + this.roofLift() + gap;
       // the windows stay in the slope over their floor's rooms while the roof lifts away (not in the cut view)
       if (part.win) {
@@ -3684,8 +3797,9 @@ export class FloorplanViewer {
         ty = 5 + fv.rank; // floors above fly away
         to = 0;
       } else if (fv.rank < sel.rank) {
-        // floors below: a dim reference, the house stacked up to this floor, or hidden
-        if (this.floorStack === "stacked") ty = 0;
+        // floors below: a dim reference, the house stacked up to this floor, or hidden; decoration always stands –
+        // the house under the flat
+        if (this.floorStack === "stacked" || this.standsBelow(fv)) ty = 0;
         else {
           ty = -0.4;
           to = this.floorStack === "single" ? 0 : BELOW_OPACITY;
@@ -3875,7 +3989,7 @@ export class FloorplanViewer {
       const k = left > FLASH_MS ? 0.5 + 0.5 * Math.sin(left / 140) : left / FLASH_MS;
       return Math.round(k * 10) / 10;
     };
-    const lamps = this.devices.filter((d) => d.floorId === fv.floor.id && (d.lamp || d.model));
+    const lamps = this.devices.filter((d) => d.floorId === fv.floor.id && (d.lamp || d.model) && !this.hiddenDecor(d));
     const shapeSig =
       this.wallMode +
       (this.lowQuality ? "L" : this.highQuality ? "H" : "M") +
@@ -4104,6 +4218,7 @@ export class FloorplanViewer {
     const rooms = fv.floor.rooms.filter((r) => r.points.length >= 3);
     const inRoom = (x: number, z: number) => !rooms.length || rooms.some((r) => pointInPolygon([x, z], r.points));
     for (const d of this.devices) {
+      if (this.hiddenDecor(d)) continue;
       if (d.model && d.floorId === fv.floor.id) {
         if (d.model === "camera_ceiling" && this.wallMode === "cut") continue;
         if (d.cone === false) continue;
@@ -4859,9 +4974,14 @@ export class FloorplanViewer {
 
   private fit(duration: number): void {
     const box = new Box3();
+    const open = this.floorId !== null;
     for (const fv of this.activeFloors()) {
+      // an opened floor frames itself: not the decoration standing below it, nor its own decorative rooms – with
+      // decoration on it, what is one's own there is framed, a garden of one's own too
+      if (open && fv.floor.id !== this.floorId && this.standsBelow(fv)) continue;
+      const own = open && this.decorativeFloors && fv.floor.rooms.some((r) => r.decorative) ? liveZones(fv.floor) : fv.floor.rooms;
       const y0 = fv.floor.elevation + fv.ty;
-      for (const room of fv.floor.rooms) {
+      for (const room of own.length ? own : fv.floor.rooms) {
         for (const [x, z] of room.points) {
           box.expandByPoint(new Vector3(x, y0, z));
           box.expandByPoint(new Vector3(x, y0 + fv.floor.height, z));
@@ -4955,7 +5075,32 @@ export class FloorplanViewer {
     return ray;
   }
 
+  /**
+   * Whether a hit lies in a decorative room or outdoor area – on the camera's side of it, as for walls: the front
+   * door in the wall to the stairwell belongs to the flat when seen from the flat, to the stairwell from there.
+   */
+  private inDecoration(fv: FloorView, point: Vector3, dir: Vector3): boolean {
+    if (!this.decorativeFloors) return false;
+    const l = Math.hypot(dir.x, dir.z) || 1;
+    const p: [number, number] = [point.x - (dir.x / l) * 0.3, point.z - (dir.z / l) * 0.3];
+    const inside = (a: { decorative?: boolean; points: Vec2[] }) => a.decorative === true && a.points.length >= 3 && pointInPolygon(p, a.points);
+    return fv.floor.rooms.some(inside) || (fv.floor.outdoor ?? []).some(inside);
+  }
+
+  /** The house view of a home with a single floor that is not decoration (a flat in a house): a tap opens it. */
+  private ownFloorGate(): { floorId: string; roomId: null } | null {
+    if (this.floorId !== null || !this.decorativeFloors || !this.building) return null;
+    const home = homeFloors(this.building);
+    return this.building.floors.length > 1 && home.length === 1 ? { floorId: home[0].id, roomId: null } : null;
+  }
+
+  /** What lies under a screen point; a decorative room catches the tap, and nothing opens. */
   private pick(x: number, y: number, devices = true): { entity: string } | { floorId: string; roomId: string | null } | null {
+    const hit = this.pickAny(x, y, devices);
+    return hit && "floorId" in hit && this.decorationAt(hit.floorId, hit.roomId) ? null : hit;
+  }
+
+  private pickAny(x: number, y: number, devices = true): { entity: string } | { floorId: string; roomId: string | null } | null {
     const ray = this.rayAt(x, y);
     const floors = this.activeFloors();
     const meshes = floors.flatMap((f) => [f.lampMesh, f.coneMesh, f.framesMesh, f.glassMesh, f.blindsMesh, f.fridgeMesh, f.wallMesh, f.floorMesh].filter((m) => m.visible));
@@ -4964,6 +5109,11 @@ export class FloorplanViewer {
       if (hit.faceIndex == null) continue;
       const tri = hit.faceIndex;
       const fv = floors.find((f) => f.group === hit.object.parent)!;
+      // decoration: the tap stops at it and nothing opens or switches (not the floor behind it either) – but in the
+      // house view of a home with a single floor of its own, a tap on the house opens that floor
+      if (this.asDecoration(fv)) return this.ownFloorGate();
+      // a decorative room belongs to its floor: in the house view a tap on it opens that floor, like a tap on the rest
+      if (this.inDecoration(fv, hit.point, ray.ray.direction)) return this.floorId === null ? { floorId: fv.floor.id, roomId: null } : null;
       if (hit.object === fv.fridgeMesh) {
         // a fence gate opens with its entity; fridge doors and awnings belong to their item behind
         const id = inRange(fv.gateTris, tri);
@@ -5075,7 +5225,7 @@ export class FloorplanViewer {
     if (this.spotCb) {
       const cb = this.spotCb;
       this.spotCb = null;
-      const fv = (this.floorId ? this.floorMap.get(this.floorId) : undefined) ?? [...this.activeFloors()].sort((a, b) => a.floor.elevation - b.floor.elevation)[0];
+      const fv = (this.floorId ? this.floorMap.get(this.floorId) : undefined) ?? this.activeFloors().filter((f) => !this.asDecoration(f)).sort((a, b) => a.floor.elevation - b.floor.elevation)[0];
       const p = fv ? this.floorPoint(fv, x, y) : null;
       cb(fv && p ? { floorId: fv.floor.id, x: p[0], z: p[1] } : null);
       return;
@@ -5435,7 +5585,7 @@ export class FloorplanViewer {
    * the same renderer, so nothing is uploaded twice; the view is restored afterwards.
    */
   floorThumbnails(width = 200, height = 150): { floorId: string; url: string }[] {
-    const floors = this.floors.filter((fv) => fv.floor.rooms.some((r) => r.points.length >= 3));
+    const floors = this.floors.filter((fv) => !this.asDecoration(fv) && fv.floor.rooms.some((r) => r.points.length >= 3));
     if (!floors.length) return [];
     const scale = this.lowQuality ? 1 : Math.min(2, window.devicePixelRatio || 1);
     const w = Math.round(width * scale);
@@ -5456,6 +5606,8 @@ export class FloorplanViewer {
     try {
       if (this.roof) this.roof.group.visible = this.roof.wins.visible = false;
       if (this.ghost) this.ghost.visible = false;
+      // stands are not in the pictures (the next frame shows them again where they belong)
+      for (const f of this.floors) if (f.stand) f.stand.group.visible = false;
       this.renderer.setClearAlpha(0);
       for (const fv of floors) {
         for (const other of this.floors) other.group.visible = other === fv;
@@ -6265,6 +6417,27 @@ export class FloorplanViewer {
     const dz = cam.z - t.z;
     const l = Math.hypot(dx, dz) || 1;
     for (const fv of this.floors) {
+      // the decoration of the opened floor (a neighbour's flat beside one's own) is gone, so it never stands in the way;
+      // elsewhere it stands, closed with its lid
+      // below an opened floor (dimmed or hidden) its decoration stands on its own, solid as in the house view
+      const standing = this.floorId !== fv.floor.id && this.decorAway(fv.floor.id);
+      if (fv.stand) {
+        fv.stand.group.visible = standing;
+        // the openings are drawn anew as they move: the stand shows the current ones
+        if (standing) {
+          fv.stand.frames.geometry = fv.framesMesh.geometry;
+          fv.stand.blinds.geometry = fv.blindsMesh.geometry;
+          fv.stand.glass.geometry = fv.glassMesh.geometry;
+        }
+      }
+      fv.mask.decor.value = !this.decorativeFloors ? 1 : this.floorId === fv.floor.id ? 0 : standing ? 2 : 1;
+      if (fv.lid) fv.lid.visible = fv.mask.decor.value === 1;
+      // decoration has nothing to look into: its walls stay whole and solid in every wall mode
+      if (this.asDecoration(fv)) {
+        fv.mask.standing.value = 0xffff;
+        fv.mask.glass.value = 0;
+        continue;
+      }
       // in a room, its floor's interior walls turn into glass as well
       const inRoom = this.roomId !== null && fv.floor.rooms.some((r) => r.id === this.roomId);
       const cut = this.wallMode === "cut";
@@ -6309,7 +6482,7 @@ export class FloorplanViewer {
     const placed: { fv: FloorView; left: number; y: number; h: number }[] = [];
     for (const fv of this.floors) {
       const box = fv.bbox;
-      if (!(house && fv.o > 0.5 && box)) {
+      if (!(house && fv.o > 0.5 && box) || this.asDecoration(fv)) {
         this.place(fv.label, null);
         continue;
       }
@@ -6352,7 +6525,8 @@ export class FloorplanViewer {
       this.anchors.forEach((a, i) => {
         const fv = this.floorMap.get(a.floorId);
         // an opened room shows the device cards of that room only; "floor" cards stay out of the house view (#226, #235)
-        if ((this.roomId !== null && a.room !== this.roomId) || (a.views === "floor" && this.floorId === null)) {
+        // a card in a decorative room stays away too: what it shows is not to be switched
+        if ((this.roomId !== null && a.room !== this.roomId) || (a.views === "floor" && this.floorId === null) || this.decorationAt(a.floorId, a.room ?? null) || this.decorAtPoint(a.floorId, a.p[0], a.p[2])) {
           this.anchorCb!(i, 0, 0, false, 1, true);
           return;
         }
@@ -6383,7 +6557,7 @@ export class FloorplanViewer {
     for (const fv of this.floors) {
       // in the house view, room labels would pile up between the floors; in a room its panel names it;
       // floors stacked below an opened floor carry no labels
-      const hide = fv.to < 0.99 || fv.o < 0.9 || house || this.roomId !== null || this.otherFloor(fv);
+      const hide = fv.to < 0.99 || fv.o < 0.9 || house || this.roomId !== null || this.otherFloor(fv) || this.asDecoration(fv);
       const y = fv.floor.elevation + fv.y + 0.05;
       for (const rp of fv.roomPins) {
         if (hide) {
@@ -6410,7 +6584,7 @@ export class FloorplanViewer {
       const fv = this.floorMap.get(p.floorId);
       const fig = this.figures.get(p.id);
       if (!pin) continue;
-      if (!fv || house || fv.to < 0.99 || fv.o < 0.9 || this.otherFloor(fv)) {
+      if (!fv || house || fv.to < 0.99 || fv.o < 0.9 || this.otherFloor(fv) || this.asDecoration(fv)) {
         this.place(pin, null);
         if (fig?.visible) {
           fig.visible = false;
@@ -6455,7 +6629,7 @@ export class FloorplanViewer {
       // except what a camera detects right now and (Haushalt Pro) a bin that goes out or post in the box: those
       // are worth a pin on the whole house too
       const alert = d.id.startsWith("detect:") || (d.id.startsWith("hh:") && d.active);
-      if (!fv || (house && !alert) || fv.to < 0.99 || fv.o < 0.9 || d.pin === false || this.otherFloor(fv)) {
+      if (!fv || (house && !alert) || fv.to < 0.99 || fv.o < 0.9 || d.pin === false || this.otherFloor(fv) || this.decorationAt(d.floorId, d.roomId)) {
         this.place(pin, null);
         continue;
       }

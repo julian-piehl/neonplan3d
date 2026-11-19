@@ -124,6 +124,8 @@ ROOM_SCHEMA = vol.Schema(
         ),
         # what a module keeps for this room or the whole house (its settings), by the module's id
         vol.Optional("mods"): _MODULE_DATA,
+        # decoration only (a neighbour's flat, the stairwell): no default, plans stay as they are
+        vol.Optional("decorative"): bool,
     },
     extra=vol.ALLOW_EXTRA,
 )
@@ -612,6 +614,8 @@ OUTDOOR_SCHEMA = vol.Schema(
         vol.Optional("no_state"): vol.All([vol.All(str, vol.Length(max=255))], vol.Length(max=MAX_HIDDEN)),
         # a module's own data for this area
         vol.Optional("mods"): _MODULE_DATA,
+        # decoration only (the neighbour's garden): no default, plans stay as they are
+        vol.Optional("decorative"): bool,
     },
     extra=vol.ALLOW_EXTRA,
 )
@@ -828,6 +832,8 @@ FLOOR_SCHEMA = vol.Schema(
         vol.Optional("ha_floor", default=None): vol.Any(None, vol.All(str, vol.Length(max=255))),
         # the camera this floor opens with (None = the house view's side)
         vol.Optional("start_view", default=None): vol.Any(None, START_VIEW_SCHEMA),
+        # decoration only: drawn with the house, but never opened, listed or tapped (no default: plans stay as they are)
+        vol.Optional("decorative"): bool,
     },
     extra=vol.ALLOW_EXTRA,
 )

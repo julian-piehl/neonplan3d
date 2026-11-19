@@ -1,6 +1,6 @@
 // Lovelace card (loaded automatically by the integration, no resource needed).
 
-import { zonesOf, type Building } from "./model.ts";
+import { homeFloors, liveFloors, liveZones, onDecorativeFloor, onDecorativeRoom, zonesOf, type Building } from "./model.ts";
 import { roomsOnly, shownRoomIds } from "./rooms-filter.ts";
 import { confirmEntities, haNavigate } from "./devices.ts";
 import { countView } from "./diagnostics.ts";
@@ -432,14 +432,19 @@ clearTimeout(this.cleanTimer);
   }
 
   /** One level up: room -> floor -> house. */
-  /** The floor shown now: the one chosen, else the configured one; a single floor is always shown. */
+  /**
+   * The floor shown now: the one chosen, else the configured one, else the only floor that is not decoration (a flat
+   * in a house opens on the flat; the house view stays one step up); a single floor is always shown.
+   */
   private currentFloor(): string | null {
     const b = this.data.building;
-    const chosen = this._floorId === undefined ? (this._config?.floor ?? null) : this._floorId;
+    const live = b ? liveFloors(b) : [];
+    const home = b ? homeFloors(b) : [];
+    const chosen = this._floorId === undefined ? (this._config?.floor ?? (home.length === 1 ? home[0].id : null)) : this._floorId;
     // a card for some rooms: their floor (with rooms on several floors the house of them, or the one chosen)
     const rooms = this.roomFloors;
     if (this.shownRooms.length) return rooms.length === 1 ? rooms[0] : chosen && rooms.includes(chosen) ? chosen : null;
-    return b && b.floors.length === 1 ? b.floors[0].id : b?.floors.some((f) => f.id === chosen) ? chosen : null;
+    return b && b.floors.length === 1 ? b.floors[0].id : live.some((f) => f.id === chosen) ? chosen : null;
   }
 
   private back(): void {
@@ -473,7 +478,7 @@ clearTimeout(this.cleanTimer);
     const home = b ? this.homeRoom() : null;
     if (!this.roomApplied && b && home) {
       this.roomApplied = true;
-      if (b.floors.some((f) => zonesOf(f).some((r) => r.id === home))) this._roomId = home;
+      if (b.floors.some((f) => liveZones(f).some((r) => r.id === home))) this._roomId = home;
     }
     const rooms = this.shownRooms;
     // the room of a card for one room is where "here" means (unless the card names its own)
@@ -594,7 +599,7 @@ clearTimeout(this.cleanTimer);
                 // in the house view (or on another floor) a tap first opens the whole floor; the floor as it is now,
                 // not as rendered: a jump switches the floor and opens the room 60 ms later, before a slow tablet
                 // has drawn again (#784)
-                if (!this.allowed(e.detail.roomId)) return;
+                if (!this.allowed(e.detail.roomId) || (b && onDecorativeRoom(b, e.detail.floorId, e.detail.roomId))) return;
                 if (this.canSwitch && (b?.floors.length ?? 0) > 1 && e.detail.floorId && this.currentFloor() !== e.detail.floorId) {
                   if (this.roomsLocked && !this.roomFloors.includes(e.detail.floorId)) return;
                   this._floorId = e.detail.floorId;
@@ -606,6 +611,7 @@ clearTimeout(this.cleanTimer);
               }}
               @floor-tap=${(e: CustomEvent<{ floorId: string | null }>) => {
                 if (this.roomsLocked && e.detail.floorId && !this.roomFloors.includes(e.detail.floorId)) return;
+                if (b && onDecorativeFloor(b, e.detail.floorId)) return;
                 this._floorId = e.detail.floorId;
                 this._roomId = null;
               }}

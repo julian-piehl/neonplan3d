@@ -76,6 +76,8 @@ export interface Room {
   wall_splits?: (number[] | null)[];
   /** What a module keeps for this room (a speaker for the announcements …), by the module's id. */
   mods?: ModuleData | null;
+  /** Decoration only (a neighbour's flat, the stairwell): drawn as it is, but never opened, listed or tapped. */
+  decorative?: boolean;
 }
 
 export type OpeningType = "door" | "window" | "garage";
@@ -453,6 +455,11 @@ export interface Floor {
   ha_floor: string | null;
   /** The camera this floor opens with (#182): another side than the house view; null = the house view's side. */
   start_view?: StartView | null;
+  /**
+   * Decoration only: the floor is drawn with the house as it is, but it cannot be opened, listed or tapped – e.g. the
+   * other flats of a rented home. The editor treats it like any other floor.
+   */
+  decorative?: boolean;
 }
 
 /** A wall drawn on its own, from a to b along its centre line. */
@@ -963,7 +970,50 @@ export function outdoorStanding(type: OutdoorType): boolean {
 export function outdoorZones(floor: Floor): Room[] {
   return (floor.outdoor ?? [])
     .filter((a) => a.area_id && a.points.length >= 3 && !outdoorStanding(a.type))
-    .map((a) => ({ id: a.id, name: (a.name ?? "").trim(), area_id: a.area_id ?? null, points: a.points, floor_material: "wood", outdoor: true, panel: a.panel, hidden: a.hidden, no_state: a.no_state }));
+    .map((a) => ({ id: a.id, name: (a.name ?? "").trim(), area_id: a.area_id ?? null, points: a.points, floor_material: "wood", outdoor: true, panel: a.panel, hidden: a.hidden, no_state: a.no_state, decorative: a.decorative }));
+}
+
+/**
+ * A floor that is decoration only: drawn with the house, but never opened, listed or tapped – marked so, or with
+ * nothing of one's own left on it (every room decorative, no outdoor area of one's own acting as a room).
+ */
+export function isDecorative(floor: Floor): boolean {
+  if (floor.decorative === true) return true;
+  return floor.rooms.length > 0 && floor.rooms.every((r) => r.decorative === true) && outdoorZones(floor).every((a) => a.decorative === true);
+}
+
+/** The floors that can be opened and listed: every floor except the decorative ones. */
+export function liveFloors(b: Building): Floor[] {
+  return b.floors.filter((f) => !isDecorative(f));
+}
+
+/**
+ * The floors one lives on: with rooms of one's own. A floor with only a garden of one's own (the ground floor under a
+ * flat) can be opened, but a home on a single floor still opens on that floor.
+ */
+export function homeFloors(b: Building): Floor[] {
+  return liveFloors(b).filter((f) => f.rooms.some((r) => r.decorative !== true));
+}
+
+/** Whether a floor id (from a tap, a search hit or a voice command) names a decorative floor of the building. */
+export function onDecorativeFloor(b: Building, floorId: string | null | undefined): boolean {
+  return !!floorId && b.floors.some((f) => f.id === floorId && isDecorative(f));
+}
+
+/**
+ * The rooms and outdoor areas acting as rooms that can be opened and listed: none on a decorative floor, and
+ * no decorative room or area. The editor keeps using zonesOf – it works on decoration as well.
+ */
+export function liveZones(floor: Floor): Room[] {
+  return isDecorative(floor) ? [] : zonesOf(floor).filter((r) => r.decorative !== true);
+}
+
+/** Whether a tap, search hit or voice command aims at decoration: a decorative floor, or a decorative room on it. */
+export function onDecorativeRoom(b: Building, floorId: string | null | undefined, roomId: string | null | undefined): boolean {
+  if (onDecorativeFloor(b, floorId)) return true;
+  if (!roomId) return false;
+  const floor = b.floors.find((f) => f.id === floorId);
+  return !!floor && zonesOf(floor).some((r) => r.id === roomId && r.decorative === true);
 }
 
 /** The rooms of a floor and its outdoor areas that act as rooms. */
@@ -1170,6 +1220,8 @@ export interface OutdoorArea {
   panel?: string[];
   hidden?: string[];
   no_state?: string[];
+  /** Decoration only (the neighbour's garden): drawn as it is, but never opened, listed or tapped. */
+  decorative?: boolean;
 }
 
 /** Pool Pro: the entities of a pool; a role left empty is searched by name ("pool"), "none" switches it off. */

@@ -30,3 +30,44 @@ test("search finds rooms and placed devices by name, room and without accents", 
   assert.equal(temp.where, "Küche");
   assert.deepEqual(searchItems(index, "  "), []);
 });
+
+test("search leaves out decorative floors and their rooms", () => {
+  const hass = { language: "de", states: {} } as unknown as HomeAssistant;
+  const b = emptyBuilding();
+  const room = (id: string, name: string) => ({ id, name, area_id: null, points: [[0, 0], [4, 0], [4, 3], [0, 3]] as [number, number][], floor_material: "wood" });
+  const eg = { ...newFloor("eg", "EG", 0), rooms: [room("nachbar", "Wohnzimmer Nachbar")], decorative: true };
+  const og = { ...newFloor("og", "OG", 2.8), rooms: [room("wz", "Wohnzimmer")] };
+  b.floors = [eg, og];
+  const index = searchIndex(hass, b);
+  assert.deepEqual(
+    index.map((i) => i.roomId),
+    ["wz"],
+  );
+  // with a single floor left to find, the hits name no floor
+  assert.equal(index[0].where, "");
+});
+
+test("search leaves out decorative rooms and the devices in them", () => {
+  const hass = {
+    language: "de",
+    states: {
+      "light.flur": { entity_id: "light.flur", state: "on", attributes: { friendly_name: "Licht Treppenhaus" } },
+      "light.wz": { entity_id: "light.wz", state: "on", attributes: { friendly_name: "Licht Wohnzimmer" } },
+    },
+  } as unknown as HomeAssistant;
+  const b = emptyBuilding();
+  const floor = newFloor("og", "OG", 2.8);
+  floor.rooms = [
+    { id: "wz", name: "Wohnzimmer", area_id: null, points: [[0, 0], [4, 0], [4, 3], [0, 3]], floor_material: "wood" },
+    { id: "th", name: "Treppenhaus", area_id: null, points: [[4, 0], [6, 0], [6, 3], [4, 3]], floor_material: "tiles", decorative: true },
+  ];
+  floor.placements = [
+    { entity_id: "light.wz", x: 1, z: 1, y: null, mount: null },
+    { entity_id: "light.flur", x: 5, z: 1, y: null, mount: null },
+  ];
+  b.floors = [floor];
+  assert.deepEqual(
+    searchIndex(hass, b).map((i) => i.roomId + ":" + (i.entity ?? "")),
+    ["wz:", "wz:light.wz"],
+  );
+});

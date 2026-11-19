@@ -69,6 +69,16 @@ test("floor labels count rooms, lights on, open windows and people", () => {
   assert.equal(floorInfoText(hass, counts), "2 Räume · 1 Licht an · 2 Pers.");
 });
 
+test("floor labels leave decoration out: its rooms and the lights in it", () => {
+  const { hass, building } = setup();
+  // the kitchen (with the light that is on) is a neighbour's
+  building.floors[0].rooms[1].decorative = true;
+  const counts = floorCounts(hass, building, new Map(), []).get("eg")!;
+  assert.deepEqual(counts, { rooms: 1, lightsOn: 0, open: 0, persons: 0 });
+  // with no room of one's own left the label names none ("0 Räume" read oddly)
+  assert.equal(floorInfoText(hass, { rooms: 0, lightsOn: 1, open: 0, persons: 0 }), "1 Licht an");
+});
+
 test("located people: a worn device places the person, a phone left elsewhere stands as a thing, away as a thing", () => {
   const { hass, building } = setup();
   const now = Date.parse("2026-10-23T12:00:00Z");

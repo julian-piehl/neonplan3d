@@ -32,7 +32,7 @@ import { setCustomStyles } from "./looks.ts";
 import { keepInRoom, snapToWall } from "./geometry/snap.ts";
 import { furnitureName } from "./furniture-names.ts";
 import { confirmEntities, defaultHeight, entityName, kindOf } from "./devices.ts";
-import { canLift, zonesOf, type LampMount } from "./model.ts";
+import { canLift, homeFloors, liveFloors, liveZones, onDecorativeFloor, onDecorativeRoom, zonesOf, type LampMount } from "./model.ts";
 import { mountBase, packsVersion } from "./packs.ts";
 import { hasFeature, labOn, registerUrl, released, UNRELEASED } from "./features.ts";
 import { mountLocateLab } from "./locate-lab.ts";
@@ -150,6 +150,8 @@ export class Floorplan3dPanel extends LitElement {
   /** The editor bundle is loaded (it is fetched the first time the editor opens). */
   private declare _editorReady: boolean;
   private declare _floorId: string | null;
+  /** The plan the view has started on (its own floor opened, if it has just one); not a state – nothing to render. */
+  private startedOn: string | null = null;
   private declare _roomId: string | null;
   /** One walks through the house: the room panel steps aside. */
   private declare _walking: boolean;
@@ -330,9 +332,18 @@ export class Floorplan3dPanel extends LitElement {
     // a language beyond German and English: its texts are fetched first, then everything renders
     if (changed.has("hass") && this.hass && !languageReady(this.hass.language)) void loadLanguage(this.hass.language).then(() => this.requestUpdate());
     const b = this.data.building;
-    if (b && this._floorId && !b.floors.some((f) => f.id === this._floorId)) {
+    // a floor that is gone, or was made decorative meanwhile, is left for the house view
+    if (b && this._floorId && !liveFloors(b).some((f) => f.id === this._floorId)) {
       this._floorId = null;
       this._roomId = null;
+    }
+    // a plan with a single floor that is not decoration (a flat in a house) opens on it, once per plan shown –
+    // the house view stays one step up
+    const plan = this.data.planId ?? "";
+    if (b && !this._site && this.startedOn !== plan) {
+      this.startedOn = plan;
+      const home = homeFloors(b);
+      if (b.floors.length > 1 && home.length === 1 && this._floorId === null) this._floorId = home[0].id;
     }
   }
 
@@ -361,6 +372,7 @@ export class Floorplan3dPanel extends LitElement {
       else this.pickPlan(owner.plan);
       return;
     }
+    if (this.data.building && onDecorativeRoom(this.data.building, floorId, roomId)) return;
     // in the house view (or on another floor) a tap first opens the whole floor; rooms come next
     if ((this.data.building?.floors.length ?? 0) > 1 && floorId && this._floorId !== floorId) {
       this._floorId = floorId;
@@ -1268,7 +1280,8 @@ export class Floorplan3dPanel extends LitElement {
       </div>`;
     }
     const floor = b.floors.find((f) => f.id === this._floorId);
-    const roomFloors = floor ? [floor] : b.floors;
+    // the room chips: of the opened floor, or of every floor that is not decoration
+    const roomFloors = floor ? [floor] : liveFloors(b);
     const tt = this.tt.active;
     // the room bar: not while travelling in time (its bar sits there); it stays when the eye tidies the rest away
     // (not released yet: only with the lab switch)
@@ -1288,7 +1301,7 @@ export class Floorplan3dPanel extends LitElement {
               }}>
                 ${this.t("all_floors")}
               </button>
-              ${[...b.floors].reverse().map(
+              ${liveFloors(b).reverse().map(
                 (f) => html`<button
                   class="fp3d-chip"
                   aria-pressed=${f.id === this._floorId}
@@ -1305,10 +1318,10 @@ export class Floorplan3dPanel extends LitElement {
         ${(roomChips ? roomFloors : []).flatMap((f) => [
           // in the house view the rooms of every floor follow a small floor label; a room without a name has
           // no button (an empty chip would only take space, #370)
-          roomFloors.length > 1 && zonesOf(f).some((r) => r.name.trim()) ? html`<span class="fp3d-nav-floor">${f.name}</span>` : nothing,
+          roomFloors.length > 1 && liveZones(f).some((r) => r.name.trim()) ? html`<span class="fp3d-nav-floor">${f.name}</span>` : nothing,
           // the rooms, then the outdoor areas acting as rooms (garden, terrace – #100)
           // several areas of one garden (front and back lawn with the same area and name) share one chip
-          ...zonesOf(f)
+          ...liveZones(f)
             .filter((r, i, all) => r.name.trim() && !(r.outdoor && all.findIndex((x) => x.outdoor && x.area_id === r.area_id && x.name === r.name) < i))
             .map(
             (r) => html`<button
@@ -1395,6 +1408,7 @@ export class Floorplan3dPanel extends LitElement {
           @room-tap=${this.onRoomTap}
           @open-extensions=${() => this.setMode("extensions")}
           @floor-tap=${(e: CustomEvent<{ floorId: string | null }>) => {
+            if (onDecorativeFloor(b, e.detail.floorId)) return;
             this._floorId = e.detail.floorId;
             this._roomId = null;
           }}

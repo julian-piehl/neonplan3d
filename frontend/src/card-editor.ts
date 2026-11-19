@@ -9,7 +9,7 @@ import { fetchBuilding, listPlans, MAIN_PLAN, type PlanEntry } from "./api.ts";
 import { labOn, UNRELEASED } from "./features.ts";
 import { CARD_CONTROLS, CARD_OWN, cardTemplate, type CardConfig, type CardControl } from "./card-config.ts";
 import { languageReady, loadLanguage, translate, type I18nKey } from "./i18n.ts";
-import type { Building } from "./model.ts";
+import { liveFloors, type Building } from "./model.ts";
 import type { HomeAssistant } from "./types.ts";
 
 /** Defaults of the card: options at their default are left out of the config. */
@@ -151,12 +151,13 @@ export class Floorplan3dCardEditor extends LitElement {
   private takePlan(b: Building): void {
     if (b === this.plan) return;
     this.plan = b;
-    this._floors = b.floors.map((f) => ({
+    // decoration cannot be opened: no start floor, start room or room choice there
+    this._floors = liveFloors(b).map((f) => ({
       id: f.id,
       name: f.name,
       rooms: [
-        ...f.rooms.map((r) => ({ id: r.id, name: r.name ?? r.id, points: r.points, outdoor: false })),
-        ...(f.outdoor ?? []).filter((a) => a.area_id && a.name).map((a) => ({ id: a.id, name: a.name ?? a.id, points: a.points, outdoor: true })),
+        ...f.rooms.filter((r) => !r.decorative).map((r) => ({ id: r.id, name: r.name ?? r.id, points: r.points, outdoor: false })),
+        ...(f.outdoor ?? []).filter((a) => a.area_id && a.name && !a.decorative).map((a) => ({ id: a.id, name: a.name ?? a.id, points: a.points, outdoor: true })),
       ],
     }));
     this._templates = (b.card_templates ?? []).map((t) => ({ id: t.id, name: t.name }));

@@ -7,7 +7,7 @@ import { Color, type BufferGeometry } from "three";
 import { sidelightLayout, isFrontDoor, openingStyle } from "../model.ts";
 import type { OpeningInfo } from "./build.ts";
 import type { Opening } from "../model.ts";
-import { ALWAYS, GeoBuffer, shade } from "./geo.ts";
+import { ALWAYS, DECOR_OFFSET, GeoBuffer, shade } from "./geo.ts";
 import { palette } from "./palette.ts";
 
 /** Colours of the parts: neon, or natural materials while a homely style is on. */
@@ -536,6 +536,8 @@ export function buildOpeningParts(infos: readonly OpeningInfo[], states: Readonl
         else panel(blinds, tf, 0, W, out - 0.07, bottom, T, new Color(0xffffff), cut, bucket, 0.045);
       }
     }
+    // in a wall of decoration: gone with it while its floor is open
+    if (info.decor) for (const [buf, from] of [[frames, fStart], [glass, gStart], [blinds, bStart]] as const) buf.f.fill(DECOR_OFFSET, from * 3);
     frameTris.push({ id: info.opening.id, start: fStart, end: frames.count });
     glassTris.push({ id: info.opening.id, start: gStart, end: glass.count });
     blindTris.push({ id: info.opening.id, start: bStart, end: blinds.count });

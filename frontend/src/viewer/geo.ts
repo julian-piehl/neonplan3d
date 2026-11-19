@@ -20,6 +20,11 @@ export const LOWER_OFFSET = 32;
 export const CAP_OFFSET = 48;
 /** Fold kind 4: the part of a tall piece of furniture above the cut height – folds away with the walls. */
 export const FURN_OFFSET = 64;
+/**
+ * Fold kind 5: decoration on a floor of one's own (a neighbour's flat) – solid, never glass or cut, and gone while
+ * its floor is open, so it never stands in the way.
+ */
+export const DECOR_OFFSET = 80;
 
 export class GeoBuffer {
   p: number[] = [];

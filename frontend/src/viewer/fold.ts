@@ -4,7 +4,8 @@
 // triangles and lines are dropped before rasterising.
 //
 // Roles: "plain" (lines, window and door parts) only follows standing/cut; "solid" (walls) also leaves
-// out glass buckets; "glass" draws only the wall parts of glass buckets, as tinted glass.
+// out glass buckets; "glass" draws only the wall parts of glass buckets, as tinted glass; "decor" draws only
+// decoration (fold kind 5), whole and solid.
 
 import type { Material } from "three";
 
@@ -15,30 +16,38 @@ export interface FoldMask {
 export interface FoldMasks {
   standing: FoldMask;
   glass: FoldMask;
+  /**
+   * 1 shows the floor's decoration (fold kind 5); 0 leaves it out, its walls as faint glass (its floor is open); 2 leaves
+   * it out altogether (it stands on its own, undimmed, below an opened floor – drawn with the role "decor").
+   */
+  decor: FoldMask;
 }
 
-export type FoldRole = "plain" | "solid" | "glass";
+export type FoldRole = "plain" | "solid" | "glass" | "decor";
 
 export function makeFoldable<T extends Material>(material: T, masks: FoldMasks, role: FoldRole = "plain"): T {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uStanding = masks.standing;
     shader.uniforms.uGlass = masks.glass;
-    shader.vertexShader = shader.vertexShader.replace("#include <common>", "#include <common>\nattribute float fold;\nuniform int uStanding;\nuniform int uGlass;").replace(
+    shader.uniforms.uDecor = masks.decor;
+    shader.vertexShader = shader.vertexShader.replace("#include <common>", "#include <common>\nattribute float fold;\nuniform int uStanding;\nuniform int uGlass;\nuniform int uDecor;").replace(
       "#include <project_vertex>",
       `#include <project_vertex>
       {
-        bool fp3dShow = ${role === "glass" ? "false" : "true"};
+        bool fp3dShow = ${role === "glass" || role === "decor" ? "false" : "true"};
         if (fold > -0.5) {
           int fp3dFold = int(fold + 0.5);
           int fp3dKind = fp3dFold / 16;
           int fp3dBucket = fp3dFold - fp3dKind * 16;
           bool fp3dStanding = ((uStanding >> fp3dBucket) & 1) == 1;
           bool fp3dGlass = ((uGlass >> fp3dBucket) & 1) == 1;
-          // kinds: 0 upper part, 1 cut edge, 2 lower part, 3 cap at the cut height, 4 furniture above the cut
-          fp3dShow = fp3dKind == 0 || fp3dKind == 4 ? fp3dStanding : fp3dKind == 1 || fp3dKind == 3 ? !fp3dStanding : true;
+          // kinds: 0 upper part, 1 cut edge, 2 lower part, 3 cap at the cut height, 4 furniture above the cut,
+          // 5 decoration (solid while shown; while its floor is open its walls stay as faint glass)
+          fp3dShow = fp3dKind == 5 ? uDecor == 1 : fp3dKind == 0 || fp3dKind == 4 ? fp3dStanding : fp3dKind == 1 || fp3dKind == 3 ? !fp3dStanding : true;
           bool fp3dWall = fp3dKind == 0 || fp3dKind == 2;
           ${role === "solid" ? "if (fp3dGlass && fp3dWall) fp3dShow = false;" : ""}
-          ${role === "glass" ? "fp3dShow = fp3dShow && fp3dGlass && fp3dWall;" : ""}
+          ${role === "glass" ? "fp3dShow = fp3dKind == 5 ? uDecor == 0 : fp3dShow && fp3dGlass && fp3dWall;" : ""}
+          ${role === "decor" ? "fp3dShow = fp3dKind == 5;" : ""}
         }
         if (!fp3dShow) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
       }`,

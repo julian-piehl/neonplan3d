@@ -1,7 +1,7 @@
 // Spoken commands: which room, floor or the whole house a sentence names ("Zeig das Wohnzimmer", "geh ins
 // Obergeschoss", "show the kitchen"). Matched on the plan's own names, so no sentences have to be taught to anyone.
 
-import { zonesOf, type Building, type Room } from "../model.ts";
+import { liveFloors, liveZones, zonesOf, type Building, type Room } from "../model.ts";
 
 export type Place = { kind: "room"; floorId: string; roomId: string; name: string } | { kind: "floor"; floorId: string; name: string } | { kind: "house"; name: string };
 
@@ -40,9 +40,11 @@ export function findPlace(sentence: string, building: Building, alias?: RoomAlia
   // (the Home Assistant area's, an alias) – "Garage" is the room in the cellar, not the driveway linked to the
   // garage's area (#668)
   let rank = -1;
-  for (const floor of building.floors) {
+  // decorative floors and their rooms are no place to go
+  const floors = liveFloors(building);
+  for (const floor of floors) {
     // outdoor areas acting as rooms ("Garten", "Terrasse") too; a room answers to its Home Assistant area's name as well
-    for (const room of zonesOf(floor)) {
+    for (const room of liveZones(floor)) {
       const indoor = room.outdoor ? 0 : 1;
       const further = ([] as (string | null | undefined)[]).concat(alias?.(room) ?? [], room.aliases ?? []);
       for (const [name, own] of [[room.name, true], ...further.map((n) => [n, false] as const)] as const) {
@@ -57,7 +59,7 @@ export function findPlace(sentence: string, building: Building, alias?: RoomAlia
     }
   }
   if (best) return best;
-  for (const floor of building.floors) {
+  for (const floor of floors) {
     const n = normalize(floor.name);
     if (n.length > len && says(text, n)) {
       best = { kind: "floor", floorId: floor.id, name: floor.name };

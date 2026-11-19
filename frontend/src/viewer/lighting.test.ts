@@ -363,3 +363,17 @@ test("a lamp behind a wall of its room sends no light through the door into the 
   const seen = lightColors(s, [lamp(1, 3.5, [1, 1, 1], 0, { kind: "omni", y: 1.2 })], 0.7, [1]);
   assert.ok(litIn(1, seen) > 0.05, `${litIn(1, seen)}`);
 });
+
+test("the light on a wall of decoration goes with it (fold kind 5); on a shared wall it stays", () => {
+  const floor = { ...newFloor("f", "F", 0), rooms: [rect("a", 0, 0, 4, 3), rect("b", 4, 0, 7, 3)] } as Floor;
+  const geo = buildFloorGeometry(floor, 0.3, 0.12, [], [], undefined, null, undefined, new Set(["b"]));
+  const s = buildLightSurface(floor, geo.walls2d, geo.wallBuckets, geo.openings, 0.25, [], undefined, geo.wallDecor);
+  let decor = 0;
+  for (let v = 0; v < s.fold.length; v++) {
+    if (s.normal[v * 3 + 1] > 0.5) continue; // the floor
+    const x = s.pos[v * 3];
+    if (s.fold[v] === 80) decor++;
+    if (x < 3.8) assert.notEqual(s.fold[v], 80, `own wall at x = ${x}`);
+  }
+  assert.ok(decor > 0);
+});

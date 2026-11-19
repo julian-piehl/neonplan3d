@@ -151,6 +151,7 @@ import {
   WINDOW_STYLES,
   SILL_BOARDS,
   openingStyle,
+  isDecorative,
   isFrontDoor,
   type OpeningStyle,
   type SillBoard,
@@ -1323,6 +1324,7 @@ export class Fp3dEditor extends LitElement {
         .floorThumbs=${false}
         .roomLabels=${this._names3d}
         .floorStack=${this.houseTool ? "stacked" : "single"}
+        .decorativeFloors=${false}
         .panelOpen=${false}
         .alerts=${false}
         .scenes=${false}
@@ -5681,6 +5683,21 @@ export class Fp3dEditor extends LitElement {
     this.change((_, floor) => Object.assign(floor, patch));
   }
 
+  /**
+   * Decoration only on or off – the floor, the selected room or the selected outdoor area; off removes the field,
+   * so a plan without decoration stays as it was.
+   */
+  private setDecorative(kind: "floor" | "room" | "outdoor", on: boolean): void {
+    const roomId = this._roomId;
+    const outdoorId = this._outdoorId;
+    this.change((_, floor) => {
+      const item = kind === "floor" ? floor : kind === "room" ? floor.rooms.find((r) => r.id === roomId) : floor.outdoor.find((o) => o.id === outdoorId);
+      if (!item) return;
+      if (on) item.decorative = true;
+      else delete item.decorative;
+    });
+  }
+
   private updateRoom(patch: Partial<Room>): void {
     const id = this._roomId;
     this.change((_, floor) => patchItem(floor.rooms.find((r) => r.id === id), patch));
@@ -5821,7 +5838,7 @@ export class Fp3dEditor extends LitElement {
               <div class="fp3d-menu" role="menu">
                 ${[...floors].reverse().map(
                   (f) => html`<button role="menuitem" class="fp3d-menu-item ${f.id === this._floorId ? "fp3d-menu-on" : ""}" @click=${() => (close(), this.selectFloor(f.id))}>
-                    ${f.name}<span class="fp3d-menu-more">${f.id === this._floorId ? "✓" : ""}</span>
+                    ${f.name}${isDecorative(f) ? ` (${this.t("decorative_tag")})` : ""}<span class="fp3d-menu-more">${f.id === this._floorId ? "✓" : ""}</span>
                   </button>`,
                 )}
                 ${admin
@@ -6934,6 +6951,7 @@ export class Fp3dEditor extends LitElement {
       const big = Math.min(b.x1 - b.x0, b.z1 - b.z0) * this._view.scale > 40;
       return svg`<g data-outdoor=${a.id} class=${`fp3d-out fp3d-out-${a.type}${a.id === this._outdoorId ? " fp3d-out-sel" : ""}`}>
         <polygon points=${pts} />
+        ${isDecorative(floor) || a.decorative ? svg`<polygon class="fp3d-decor-over" points=${pts} />` : nothing}
         ${big ? svg`<text x=${cx} y=${cy + 4}>${this.t(`out_${a.type}` as I18nKey)}</text>` : nothing}
         ${gateSpans(a).map((g) => {
           // a gate: its gap as a bright bar across the fence line (#818)
@@ -7034,7 +7052,11 @@ export class Fp3dEditor extends LitElement {
         ? html`<label class="fp3d-field fp3d-wide"
             >${this.t("room_name")}
             <input .value=${a.name ?? ""} ?disabled=${!admin} @change=${(e: Event) => this.updateOutdoor({ name: (e.target as HTMLInputElement).value.trim() || null })}
-          /></label>`
+            /></label>
+            <label class="fp3d-check fp3d-wide" title=${this.t("outdoor_decorative_hint")}
+              ><input type="checkbox" ?disabled=${!admin} .checked=${a.decorative === true} @change=${(e: Event) => this.setDecorative("outdoor", (e.target as HTMLInputElement).checked)} />
+              ${this.t("decorative")}</label
+            >`
         : nothing}
       <p class="fp3d-sub fp3d-wide">${this.t("outdoor_area_hint")}</p>
       ${a.area_id ? this.renderOutdoorDevices(a) : nothing}`;
@@ -7981,6 +8003,7 @@ export class Fp3dEditor extends LitElement {
               .floorThumbs=${false}
               .roomLabels=${false}
               .floorStack=${"single"}
+              .decorativeFloors=${false}
               .panelOpen=${false}
               .alerts=${false}
               .scenes=${false}
@@ -10617,10 +10640,13 @@ export class Fp3dEditor extends LitElement {
   }
 
   private renderRooms(floor: Floor) {
+    // decoration (a decorative floor's rooms, a neighbour's flat): hatched and dashed, as plans mark what is not one's own
+    const decor = (r: Room) => isDecorative(floor) || r.decorative === true;
     return svg`
+      <defs><pattern id="fp3d-decor-hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" /></pattern></defs>
       <g>${floor.rooms.map((r) => {
         const pts = r.points.map((p) => this.toScreen(p).join(",")).join(" ");
-        return svg`<polygon data-room=${r.id} class=${r.id === this._roomId ? "fp3d-room fp3d-room-sel" : "fp3d-room"} points=${pts} />`;
+        return svg`<polygon data-room=${r.id} class=${`fp3d-room${r.id === this._roomId ? " fp3d-room-sel" : ""}${decor(r) ? " fp3d-room-decor" : ""}`} points=${pts} />`;
       })}</g>
       ${this.renderEdgeHighlight()}
       <g pointer-events="none">${floor.rooms.map((r) => {
@@ -10630,7 +10656,7 @@ export class Fp3dEditor extends LitElement {
         const grip = g
           ? svg`<g class="fp3d-label-grip" data-room-label=${r.id} pointer-events="all"><title>${this.t("room_label_move")}</title><circle class="fp3d-hit" cx=${g[0]} cy=${g[1]} r="14" /><circle cx=${g[0]} cy=${g[1]} r="7" /><path d=${`M${g[0] - 4} ${g[1]}h8M${g[0]} ${g[1] - 4}v8`} /></g>`
           : nothing;
-        return svg`<text class="fp3d-room-name" x=${cx} y=${cy - 2}>${r.name}</text>
+        return svg`<text class=${decor(r) ? "fp3d-room-name fp3d-decor-label" : "fp3d-room-name"} x=${cx} y=${cy - 2}>${r.name}</text>
           <text class="fp3d-room-area" x=${cx} y=${cy + 14}>${this.area(polygonArea(r.points))}</text>${grip}`;
       })}</g>
     `;
@@ -11296,6 +11322,10 @@ export class Fp3dEditor extends LitElement {
                     </select></label
                   >`
                 : nothing}
+              <label class="fp3d-check fp3d-wide" title=${this.t("floor_decorative_hint")}
+                ><input type="checkbox" ?disabled=${!admin} .checked=${floor.decorative === true} @change=${(e: Event) => this.setDecorative("floor", (e.target as HTMLInputElement).checked)} />
+                ${this.t("decorative")}</label
+              >
               ${admin && this.unplacedAreas(floor).length
                 ? html`<div class="fp3d-actions fp3d-wide">
                     <button class="fp3d-btn fp3d-primary" title=${this.t("area_rooms_hint")} @click=${() => this.addAreaRooms(floor)}>
@@ -11418,6 +11448,10 @@ export class Fp3dEditor extends LitElement {
             <option value="" ?selected=${!room.area_id}>${this.t("no_area")}</option>
             ${areas.map((a) => html`<option value=${a.area_id} ?selected=${a.area_id === room.area_id}>${a.name}</option>`)}
           </select></label
+        >
+        <label class="fp3d-check fp3d-wide" title=${this.t("room_decorative_hint")}
+          ><input type="checkbox" ?disabled=${!admin} .checked=${room.decorative === true} @change=${(e: Event) => this.setDecorative("room", (e.target as HTMLInputElement).checked)} />
+          ${this.t("decorative")}</label
         >
         ${this.entitySelect(
           this.t("room_cleaning"),
@@ -15483,6 +15517,27 @@ export class Fp3dEditor extends LitElement {
         fill: rgba(55, 224, 255, 0.14);
         stroke: var(--fp3d-accent);
         stroke-width: 2.5;
+      }
+      .fp3d-room-decor,
+      .fp3d-room-decor:hover {
+        fill: url(#fp3d-decor-hatch);
+        stroke: rgba(138, 155, 184, 0.7);
+        stroke-dasharray: 6 4;
+      }
+      .fp3d-room-decor.fp3d-room-sel {
+        stroke: var(--fp3d-accent);
+      }
+      #fp3d-decor-hatch line {
+        stroke: rgba(138, 155, 184, 0.3);
+        stroke-width: 2;
+      }
+      .fp3d-decor-label {
+        fill: var(--fp3d-muted);
+      }
+      .fp3d-out .fp3d-decor-over {
+        fill: url(#fp3d-decor-hatch);
+        stroke: none;
+        pointer-events: none;
       }
       .fp3d-room-name {
         fill: var(--fp3d-text);

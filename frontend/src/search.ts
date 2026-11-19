@@ -1,7 +1,7 @@
 // "Where is …?": rooms and the devices of the plan, found by name.
 
 import { defaultHeight, entityName, furnitureEntities, kindOf, type DeviceKind } from "./devices.ts";
-import { centroid, pointInPolygon, type Building } from "./model.ts";
+import { centroid, liveFloors, pointInPolygon, type Building } from "./model.ts";
 import type { HomeAssistant } from "./types.ts";
 
 export interface SearchItem {
@@ -25,18 +25,21 @@ const norm = (s: string) => s.toLocaleLowerCase().normalize("NFD").replace(/[̀-
 export function searchIndex(hass: HomeAssistant, building: Building): SearchItem[] {
   const out: SearchItem[] = [];
   const links = furnitureEntities(hass, building.floors);
-  const many = building.floors.length > 1;
-  for (const floor of building.floors) {
+  // decorative floors are not to be found: nothing on them can be opened
+  const floors = liveFloors(building);
+  const many = floors.length > 1;
+  for (const floor of floors) {
     const roomAt = (x: number, z: number) => floor.rooms.find((r) => r.points.length >= 3 && pointInPolygon([x, z], r.points)) ?? null;
     const where = (x: number, z: number) => [roomAt(x, z)?.name, many ? floor.name : null].filter(Boolean).join(" · ");
     for (const room of floor.rooms) {
-      if (room.points.length < 3) continue;
+      if (room.points.length < 3 || room.decorative) continue;
       const [x, z] = centroid(room.points);
       out.push({ kind: "room", name: room.name, where: many ? floor.name : "", floorId: floor.id, roomId: room.id, entity: null, icon: null, x, z, y: 0 });
     }
     const seen = new Set<string>();
     const add = (entity: string, x: number, z: number, y: number) => {
-      if (seen.has(entity) || !hass.states[entity]) return;
+      // a device in a decorative room is not to be found either: its room cannot be opened
+      if (seen.has(entity) || !hass.states[entity] || roomAt(x, z)?.decorative) return;
       seen.add(entity);
       out.push({ kind: "device", name: entityName(hass, entity), where: where(x, z), floorId: floor.id, roomId: roomAt(x, z)?.id ?? null, entity, icon: kindOf(entity), x, z, y });
     };

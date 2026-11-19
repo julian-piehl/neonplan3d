@@ -4,7 +4,7 @@ import type { BufferGeometry } from "three";
 import type { Floor, Furniture, Opening, Room, Vec2 } from "../model.ts";
 import { newFloor, pointInPolygon, stairsULayout } from "../model.ts";
 import { generateWalls } from "../geometry/walls.ts";
-import { buildFloorGeometry, clipAlong, facingGroups, packStairHole, stairHoles, stairHoleParts, wallHeight } from "./build.ts";
+import { buildFloorGeometry, buildLid, clipAlong, facingGroups, packStairHole, stairHoles, stairHoleParts, wallHeight } from "./build.ts";
 import { setNaturalPalette } from "./palette.ts";
 import type { PackItem } from "../packs.ts";
 
@@ -466,4 +466,65 @@ test("beside a window only the reveal is drawn: no wall face under the sill or o
   }
   // the reveal itself stays closed: 1.3 m high across the wall's thickness
   near(reveal, 1.3 * EXT, 1e-5);
+});
+
+test("a lid covers the rooms just under their walls' top, facing up", () => {
+  const rooms = [
+    { id: "a", name: "A", area_id: null, points: [[0, 0], [4, 0], [4, 3], [0, 3]], floor_material: "wood" },
+    // drawn the other way round: the lid still faces up
+    { id: "b", name: "B", area_id: null, points: [[4, 0], [4, 3], [7, 3], [7, 0]], floor_material: "wood" },
+    { id: "c", name: "unfinished", area_id: null, points: [[0, 0], [1, 1]], floor_material: "wood" },
+  ] as Room[];
+  const p = buildLid(rooms, 2.5).getAttribute("position");
+  assert.equal(p.count, 12); // two triangles per rectangle, none for the unfinished room
+  for (let t = 0; t < p.count; t += 3) {
+    const [ax, az, bx, bz, cx, cz] = [p.getX(t), p.getZ(t), p.getX(t + 1), p.getZ(t + 1), p.getX(t + 2), p.getZ(t + 2)];
+    // (b - a) x (c - a), its y: positive when the face looks up
+    assert.ok((bz - az) * (cx - ax) - (bx - ax) * (cz - az) > 0);
+    for (const i of [t, t + 1, t + 2]) assert.ok(Math.abs(p.getY(i) - 2.49) < 1e-6);
+  }
+});
+
+test("decoration: walls touching only its rooms, their lines and its furniture are of fold kind 5; a shared wall is not", () => {
+  const DECOR = 80;
+  const table: Furniture = { id: "t", type: "table", x: 5.5, z: 1.5, rotation: 0, w: 1, d: 1, h: 0.75, variant: null };
+  // "a" is one's own flat, "b" the neighbour's beside it (sharing the wall at x = 4)
+  const floor = floorWith([rect("a", 0, 0, 4, 3), rect("b", 4, 0, 7, 3)], [opening("window", "b", 1, 1, 1)], [table]);
+  const plain = buildFloorGeometry(floor, EXT, INT);
+  const geo = buildFloorGeometry(floor, EXT, INT, [], [], undefined, null, undefined, new Set(["b"]));
+  // without decoration nothing is of its kind
+  assert.ok(!Array.from(plain.walls.getAttribute("fold").array).includes(DECOR));
+  // the solids: every wall triangle west of the shared wall's axis is one's own, every one east of it decoration
+  const p = geo.walls.getAttribute("position");
+  const fold = geo.walls.getAttribute("fold");
+  const table0 = geo.furnitureTris.find((t) => t.id === "t")!;
+  for (let v = 0; v < p.count; v++) {
+    const x = p.getX(v);
+    const inTable = v >= table0.start * 3 && v < table0.end * 3;
+    if (inTable) assert.equal(fold.getX(v), DECOR, "the furniture in the neighbour's flat");
+    else if (x < 3.9) assert.notEqual(fold.getX(v), DECOR, `own wall at x = ${x}`);
+    else if (x > 4.1) assert.equal(fold.getX(v), DECOR, `the neighbour's wall at x = ${x}`);
+  }
+  // the shared wall (around x = 4, across the depth) stays one's own
+  for (let v = 0; v < p.count; v++) if (Math.abs(p.getX(v) - 4) < 0.05 && p.getZ(v) > 0.5 && p.getZ(v) < 2.5) assert.notEqual(fold.getX(v), DECOR);
+  // the window in its wall goes with it, and the decoration has no cut lines (its walls are never cut)
+  assert.equal(geo.openings.find((o) => o.opening.room_id === "b")?.decor, true);
+  const lines = segments(geo.lines);
+  assert.ok(lines.some((s) => s[6] === DECOR));
+  assert.ok(!lines.some((s) => s[6] === DECOR && Math.abs(s[1] - floor.cut_height) < 1e-6 && Math.abs(s[4] - floor.cut_height) < 1e-6));
+});
+
+test("a wall between one's own room and decoration faces like an outer wall, away from one's own room", () => {
+  const shared = (g: ReturnType<typeof buildFloorGeometry>) => g.walls2d.findIndex((w) => Math.abs(w.a[0] - 4) < 1e-6 && Math.abs(w.b[0] - 4) < 1e-6);
+  const floor = floorWith([rect("a", 0, 0, 4, 3), rect("b", 4, 0, 7, 3)]);
+  // without decoration it is an inner wall: no direction of its own
+  const plain = buildFloorGeometry(floor, EXT, INT);
+  assert.equal(plain.buckets[plain.wallBuckets[shared(plain)]], null);
+  // the neighbour's flat east of it: it faces east; one's own room east of it: it faces west
+  for (const [decor, x] of [["b", 1], ["a", -1]] as const) {
+    const geo = buildFloorGeometry(floor, EXT, INT, [], [], undefined, null, undefined, new Set([decor]));
+    const n = geo.buckets[geo.wallBuckets[shared(geo)]]!;
+    near(n[0], x);
+    near(n[1], 0);
+  }
 });

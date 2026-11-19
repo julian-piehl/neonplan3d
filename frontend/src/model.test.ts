@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { emptyBuilding, lockAlong, gangEntities, gangPlateWidth, gangsOf, floorElevation, newFloor, outdoorZones, zonesOf, openingPreset, openingStyle, normalizeBuilding, outdoorDrop, outdoorGround, outdoorSurface, furnitureCorner, resizeFurniture, roomTiles, sidelightLayout, spotGrid, surfaceHeight, syncCameraLooks, type Furniture } from "./model.ts";
+import { emptyBuilding, homeFloors, isDecorative, liveFloors, liveZones, onDecorativeFloor, onDecorativeRoom, lockAlong, gangEntities, gangPlateWidth, gangsOf, floorElevation, newFloor, outdoorZones, zonesOf, openingPreset, openingStyle, normalizeBuilding, outdoorDrop, outdoorGround, outdoorSurface, furnitureCorner, resizeFurniture, roomTiles, sidelightLayout, spotGrid, surfaceHeight, syncCameraLooks, type Floor, type Furniture } from "./model.ts";
 
 test("a sidelight sits opposite the hinge, on the hinge side when asked, and keeps the leaf at least half a metre", () => {
   const none = {};
@@ -292,4 +292,100 @@ test("a camera's look hangs at the camera's height, not on the floor (#779)", ()
   const later = structuredClone(next);
   syncCameraLooks(later, next);
   assert.equal(later.floors[0].furniture[0].mount_y, 2.3);
+});
+
+test("decorative floors are drawn with the house but are not live; the flag survives loading", () => {
+  const b = emptyBuilding();
+  const eg = { ...newFloor("eg", "EG", 0), decorative: true };
+  const og = newFloor("og", "OG", 2.8);
+  const dg = { ...newFloor("dg", "DG", 5.6), decorative: true };
+  b.floors = [eg, og, dg];
+  assert.equal(isDecorative(eg), true);
+  assert.equal(isDecorative(og), false);
+  // a missing flag (every plan so far) or anything but true is a normal floor
+  assert.equal(isDecorative({ ...og, decorative: false }), false);
+  assert.deepEqual(
+    liveFloors(b).map((f) => f.id),
+    ["og"],
+  );
+  // loading keeps the flag (and a plan without it stays without)
+  const loaded = normalizeBuilding(structuredClone(b));
+  assert.deepEqual(
+    loaded.floors.map((f) => f.decorative),
+    [true, undefined, true],
+  );
+});
+
+test("a floor id names a decorative floor only when that floor is decorative", () => {
+  const b = emptyBuilding();
+  b.floors = [{ ...newFloor("eg", "EG", 0), decorative: true }, newFloor("og", "OG", 2.8)];
+  assert.equal(onDecorativeFloor(b, "eg"), true);
+  assert.equal(onDecorativeFloor(b, "og"), false);
+  // the house view, an empty tap and an unknown floor are no decorative floor
+  assert.equal(onDecorativeFloor(b, null), false);
+  assert.equal(onDecorativeFloor(b, ""), false);
+  assert.equal(onDecorativeFloor(b, "dg"), false);
+});
+
+test("decorative rooms and outdoor areas are drawn but not live; a decorative floor has no live zones at all", () => {
+  const b = emptyBuilding();
+  const square = (x: number): [number, number][] => [[x, 0], [x + 4, 0], [x + 4, 4], [x, 4]];
+  const og = {
+    ...newFloor("og", "OG", 2.8),
+    rooms: [
+      { id: "wz", name: "Wohnzimmer", area_id: null, points: square(0), floor_material: "wood" },
+      { id: "th", name: "Treppenhaus", area_id: null, points: square(4), floor_material: "tiles", decorative: true },
+    ],
+  };
+  const eg = {
+    ...newFloor("eg", "EG", 0),
+    rooms: [{ id: "nb", name: "Nachbar", area_id: null, points: square(0), floor_material: "wood" }],
+    outdoor: [
+      { id: "g1", type: "lawn", points: square(10), area_id: "garten", name: "Garten" },
+      { id: "g2", type: "lawn", points: square(20), area_id: "garten_nachbar", name: "Garten Nachbar", decorative: true },
+    ],
+  } as Floor;
+  b.floors = [eg, og];
+  assert.deepEqual(
+    liveZones(og).map((r) => r.id),
+    ["wz"],
+  );
+  assert.deepEqual(
+    liveZones(eg).map((r) => r.id),
+    ["nb", "g1"],
+  );
+  // the flag reaches the outdoor area acting as a room
+  assert.equal(zonesOf(eg).find((r) => r.id === "g2")?.decorative, true);
+  assert.equal(onDecorativeRoom(b, "og", "th"), true);
+  assert.equal(onDecorativeRoom(b, "og", "wz"), false);
+  assert.equal(onDecorativeRoom(b, "eg", "g2"), true);
+  assert.equal(onDecorativeRoom(b, "og", null), false);
+  // on a decorative floor every room is decoration
+  eg.decorative = true;
+  assert.deepEqual(liveZones(eg), []);
+  assert.equal(onDecorativeRoom(b, "eg", "nb"), true);
+});
+
+test("a floor with nothing of one's own left is decoration; one with only a garden of one's own is live, but no home", () => {
+  const square = (x: number): [number, number][] => [[x, 0], [x + 4, 0], [x + 4, 4], [x, 4]];
+  const room = (id: string, decorative?: boolean) => ({ id, name: id, area_id: null, points: square(id.length * 5), floor_material: "wood", ...(decorative ? { decorative } : {}) });
+  const garden = (decorative?: boolean) => ({ id: "g", type: "lawn", points: square(30), area_id: "garten", name: "Garten", ...(decorative ? { decorative } : {}) }) as Floor["outdoor"][number];
+  const b = emptyBuilding();
+  const eg = { ...newFloor("eg", "EG", 0), rooms: [room("nachbar", true), room("flur", true)] } as Floor;
+  const og = { ...newFloor("og", "OG", 2.8), rooms: [room("wohnen"), room("treppe", true)] } as Floor;
+  b.floors = [eg, og];
+  // every room of the ground floor is the neighbours': the floor is decoration, without its own mark
+  assert.equal(isDecorative(eg), true);
+  assert.equal(eg.decorative, undefined);
+  assert.deepEqual(liveFloors(b).map((f) => f.id), ["og"]);
+  // a garden of one's own on it: it can be opened (for the garden), but the home is still the flat upstairs
+  eg.outdoor = [garden()];
+  assert.equal(isDecorative(eg), false);
+  assert.deepEqual(liveFloors(b).map((f) => f.id), ["eg", "og"]);
+  assert.deepEqual(homeFloors(b).map((f) => f.id), ["og"]);
+  // the neighbours' garden is decoration again
+  eg.outdoor = [garden(true)];
+  assert.equal(isDecorative(eg), true);
+  // a floor without rooms (only a garden) is no decoration
+  assert.equal(isDecorative({ ...newFloor("x", "X", 0), outdoor: [garden()] } as Floor), false);
 });

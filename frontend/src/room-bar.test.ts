@@ -64,3 +64,22 @@ test("room bar: favourites Home Assistant knows, scenes and scripts run, switche
     { id: "switch.stehlampe", domain: "homeassistant", service: "toggle", on: true },
   ]);
 });
+
+test("room bar: a decorative floor has no tiles, in the house view and asked for by its id", () => {
+  const { hass, b } = setup();
+  b.floors = b.floors.map((f) => (f.id === "og" ? { ...f, decorative: true } : f));
+  assert.deepEqual(
+    roomTiles(hass, b, null).map((t) => t.roomId),
+    ["wohnen", "bad"],
+  );
+  assert.deepEqual(roomTiles(hass, b, "og"), []);
+});
+
+test("room bar: a decorative room has no tile", () => {
+  const { hass, b } = setup();
+  b.floors = b.floors.map((f) => (f.id === "eg" ? { ...f, rooms: f.rooms.map((r) => (r.id === "bad" ? { ...r, decorative: true } : r)) } : f));
+  assert.deepEqual(
+    roomTiles(hass, b, "eg").map((t) => t.roomId),
+    ["wohnen"],
+  );
+});

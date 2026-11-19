@@ -359,10 +359,14 @@ export function floorCounts(hass: HomeAssistant, building: Building, links: Map<
   const on = (id: string | null) => !!id && hass.states[id]?.state === "on";
   for (const floor of building.floors) {
     const lights = new Set<string>();
+    // decoration (a neighbour's flat) is not counted: neither its rooms nor what is in them
+    const rooms = floor.rooms.filter((r) => !r.decorative);
+    const decor = floor.rooms.filter((r) => r.decorative && r.points.length >= 3);
     // main entities only: a LED strip with 30 segment entities is one light
-    for (const room of floor.rooms) for (const id of primaryEntities(hass, areaEntities(hass, room.area_id))) if (kindOf(id) === "light") lights.add(id);
-    for (const pl of floor.placements) if (kindOf(pl.entity_id) === "light") lights.add(pl.entity_id);
+    for (const room of rooms) for (const id of primaryEntities(hass, areaEntities(hass, room.area_id))) if (kindOf(id) === "light") lights.add(id);
+    for (const pl of floor.placements) if (kindOf(pl.entity_id) === "light" && !decor.some((r) => pointInPolygon([pl.x, pl.z], r.points))) lights.add(pl.entity_id);
     const open = floor.openings.filter((o) => {
+      if (decor.some((r) => r.id === o.room_id)) return false;
       const l = links.get(o.id);
       if (!l) return false;
       // a garage door counts as open while its cover is not (almost) down
@@ -372,7 +376,7 @@ export function floorCounts(hass: HomeAssistant, building: Building, links: Map<
       return s.open > 0.5 || s.tilt > 0.5 || s.open2 > 0.5 || s.tilt2 > 0.5;
     }).length;
     out.set(floor.id, {
-      rooms: floor.rooms.length,
+      rooms: rooms.length,
       lightsOn: [...lights].filter((id) => hass.states[id]?.state === "on").length,
       open,
       persons: persons.filter((p) => p.floorId === floor.id).length,
@@ -382,7 +386,8 @@ export function floorCounts(hass: HomeAssistant, building: Building, links: Map<
 }
 
 export function floorInfoText(hass: HomeAssistant | undefined, c: FloorCounts): string {
-  const parts = [c.rooms === 1 ? translate(hass, "floor_rooms_one") : translate(hass, "floor_rooms", { n: c.rooms })];
+  // a floor with only a garden of one's own (the ground floor under a flat) has no rooms to count
+  const parts = c.rooms ? [c.rooms === 1 ? translate(hass, "floor_rooms_one") : translate(hass, "floor_rooms", { n: c.rooms })] : [];
   if (c.lightsOn) parts.push(translate(hass, "floor_lights", { n: c.lightsOn }));
   if (c.open) parts.push(translate(hass, "floor_open", { n: c.open }));
   if (c.persons) parts.push(translate(hass, "floor_persons", { n: c.persons }));

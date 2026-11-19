@@ -10,7 +10,7 @@ import { outdoorSurface } from "./outdoor.ts";
 import { groundDrop, outdoorStanding, pointInPolygon } from "../model.ts";
 import { slopeTop, type Wall } from "../geometry/walls.ts";
 import type { OpeningInfo } from "./build.ts";
-import { LOWER_OFFSET, triangulate } from "./geo.ts";
+import { DECOR_OFFSET, LOWER_OFFSET, triangulate } from "./geo.ts";
 import { clipConvex } from "../geometry/area.ts";
 
 /** How a lamp spreads its light. */
@@ -76,6 +76,8 @@ export function buildLightSurface(
   cell: number,
   holes: Vec2[][] = [],
   roofUnder?: (x: number, z: number) => number | null,
+  /** Per wall: one of decoration – the light on it goes with it while its floor is open. */
+  wallDecor: boolean[] = [],
 ): LightSurface {
   const pos: number[] = [];
   const normal: number[] = [];
@@ -259,7 +261,7 @@ export function buildLightSurface(
             if (y1 - y0 < 0.01) continue;
             const ym = (y0 + y1) / 2;
             if (gaps.some((g) => sm > g.s0 && sm < g.s1 && ym > g.y0 && ym < g.y1)) continue;
-            const f = y0 >= cut - 1e-6 ? bucket : LOWER_OFFSET + bucket;
+            const f = wallDecor[wi] ? DECOR_OFFSET : y0 >= cut - 1e-6 ? bucket : LOWER_OFFSET + bucket;
             // under a roof slope the lit face ends where the wall does (#201)
             const topA = Math.min(y1, under(s0));
             const topB = Math.min(y1, under(s1));

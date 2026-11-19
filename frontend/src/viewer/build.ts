@@ -24,7 +24,7 @@ import { pushSurroundings } from "./surroundings.ts";
 import type { PlacedSurroundings } from "../surroundings.ts";
 import { pushModules } from "./roof.ts";
 import type { RoofFace } from "../solar.ts";
-import { cutAbove, cutLinesAbove, FURN_OFFSET, ALWAYS, CAP_OFFSET, CUT_OFFSET, EDGE_BASE, EDGE_CUT, EDGE_SOFT, EDGE_TOP, GeoBuffer, LineBuffer, LOWER_OFFSET, pushPrism, triangulate } from "./geo.ts";
+import { cutAbove, cutLinesAbove, FURN_OFFSET, ALWAYS, CAP_OFFSET, CUT_OFFSET, DECOR_OFFSET, EDGE_BASE, EDGE_CUT, EDGE_SOFT, EDGE_TOP, GeoBuffer, LineBuffer, LOWER_OFFSET, pushPrism, triangulate } from "./geo.ts";
 import { cutTopColor, facadeColor, hexColor, naturalPalette, palette } from "./palette.ts";
 
 export { ALWAYS, CUT_OFFSET, GeoBuffer, LineBuffer, pushPrism, shade } from "./geo.ts";
@@ -50,6 +50,8 @@ export const FLOOR_LOOK: Record<string, { color: number; tile: [number, number] 
 
 /** Opening resolved onto its wall, as needed for frames, sashes and blinds. */
 export interface OpeningInfo {
+  /** In a wall of decoration (fold kind 5): gone with it while its floor is open. */
+  decor?: boolean;
   opening: Opening;
   /** Fold bucket of the wall it sits in. */
   bucket: number;
@@ -86,6 +88,8 @@ export interface FloorGeometry {
   buckets: (Vec2 | null)[];
   openings: OpeningInfo[];
   walls2d: Wall[];
+  /** Per wall of walls2d: one of decoration (fold kind 5), e.g. for the light on it. */
+  wallDecor: boolean[];
   /** Room pairs joined by "no wall": one space, also for the light. */
   openRooms: [string, string][];
   /** Fold bucket of each wall in walls2d. */
@@ -218,8 +222,15 @@ export function buildFloorGeometry(
    * top). The roof above still cuts it (#1156).
    */
   roofRise?: (x: number, z: number, top: number) => number | null,
+  /** The rooms that are decoration (only in the views; the editor works on them). */
+  decorRooms: ReadonlySet<string> = new Set(),
 ): FloorGeometry {
   const { walls, open: openRooms } = generateWalls(floor.rooms, { exterior: wallExterior, interior: wallInterior }, floor.walls ?? []);
+  // decoration (a neighbour's flat): a wall touching nothing but it, the wall's edges and openings and the furniture in
+  // it are of fold kind 5 – solid in the house view, gone while the floor is open; a wall shared with a room of one's
+  // own is that room's
+  const decorWall = (w: Wall) => !w.free && w.roomLeft !== null && decorRooms.has(w.roomLeft) && (w.roomRight === null || decorRooms.has(w.roomRight));
+  const inDecor = (x: number, z: number) => floor.rooms.some((r) => decorRooms.has(r.id) && r.points.length >= 3 && pointInPolygon([x, z], r.points));
   // the top of a wall at a point: its own height (a sloping wall's at that point; under a dormer up to where the
   // dormer's front starts, #1156), or the roof above when lower
   const topAt = (x: number, z: number, H: number, wall?: Wall): number => {
@@ -352,14 +363,16 @@ export function buildFloorGeometry(
     const left = freeWallRoomLeft(wall, floor.rooms);
     if (left !== null) freeOuter.set(wall, left);
   }
-  // outer walls are grouped by the direction they really face, so each turns to glass at its own angle (#1189)
+  // outer walls are grouped by the direction they really face, so each turns to glass at its own angle (#1189); a wall
+  // between one's own room and decoration is an outer wall of that room (the decoration is gone while it is open)
+  const toDecor = (w: Wall) => !w.free && w.roomLeft !== null && w.roomRight !== null && decorRooms.has(w.roomLeft) !== decorRooms.has(w.roomRight);
   const outer = walls.flatMap((wall) => {
     const freeLeft = freeOuter.get(wall);
-    if (!wall.exterior && freeLeft === undefined) return [];
+    if (!wall.exterior && freeLeft === undefined && !toDecor(wall)) return [];
     const dx = wall.b[0] - wall.a[0];
     const dz = wall.b[1] - wall.a[1];
     const l = Math.hypot(dx, dz) || 1;
-    const k = freeLeft === false ? -1 : 1;
+    const k = freeLeft === false || (toDecor(wall) && decorRooms.has(wall.roomLeft!)) ? -1 : 1;
     return [{ wall, out: [(k * dz) / l, (-k * dx) / l] as Vec2, len: l }]; // right normal: away from the room
   });
   const faces = facingGroups(outer, MAX_BUCKETS - 1);
@@ -422,6 +435,7 @@ export function buildFloorGeometry(
       top,
       hingeAtStart: (o.hinge === "left") === startIsLeft,
       exterior: wall.exterior || freeLeft !== undefined,
+      ...(decorWall(wall) ? { decor: true } : {}),
     };
     openings.push(info);
     let list = spans.get(wall);
@@ -445,6 +459,7 @@ export function buildFloorGeometry(
   const wallBuf = new GeoBuffer();
   const floorSide = wallColors(floor);
   for (const wall of walls) {
+    const f0 = wallBuf.f.length;
     const b = wallBucket.get(wall)!;
     const ax = unit([wall.b[0] - wall.a[0], wall.b[1] - wall.a[1]]);
     const list = (spans.get(wall) ?? []).sort((p, q) => p.s0 - q.s0);
@@ -588,6 +603,7 @@ export function buildFloorGeometry(
         if (y1 > cut + 1e-6 && roofTop > cut - 1e-6) pushPrism(wallBuf, poly, Math.max(y0, cut), sloped ? topOf : y1, NEON.wall, NEON.wallTop, { sideColor, aoFrom: 0, fold: b, bottom: lintel && y0 >= cut, skipSide, sideBands });
       }
     }
+    if (decorWall(wall)) wallBuf.f.fill(DECOR_OFFSET, f0);
   }
 
   // ---------------------------------------------------------------- edges
@@ -606,7 +622,10 @@ export function buildFloorGeometry(
     if (sp) for (const p of [e.a, e.b]) openEnds.set(vkey(p), sp);
   }
   const openAt = (p: Vec2) => openEnds.has(vkey(p));
-  for (const e of outline.edges) {
+  const edges = decorLast(outline.edges, (e) => decorWall(e.wall));
+  let mark = -1;
+  for (const [i, e] of edges.list.entries()) {
+    if (i === edges.from) mark = lines.f.length;
     const b = wallBucket.get(e.wall)!;
     const open = openEndSpan(e, spans.get(e.wall) ?? []);
     if (open) {
@@ -663,8 +682,12 @@ export function buildFloorGeometry(
       }
     }
   }
+  if (mark >= 0) decorLines(lines, mark);
   const topOfWall = (w: Wall, p: Vec2) => topAt(p[0], p[1], wallHeight(w, floor.height), w);
-  for (const c of outline.corners) {
+  const corners = decorLast(outline.corners, (c) => c.walls.every(decorWall));
+  mark = -1;
+  for (const [i, c] of corners.list.entries()) {
+    if (i === corners.from) mark = lines.f.length;
     if (buried(c.p[0], c.p[1])) continue;
     // the corner line reaches up to the tallest wall meeting there, not to whichever came first (#417)
     const tall = c.walls.reduce((m, w) => (topOfWall(w, c.p) > topOfWall(m, c.p) + 1e-6 ? w : m), c.wall);
@@ -678,9 +701,13 @@ export function buildFloorGeometry(
     }
     lines.segSplit([c.p[0], 0.004, c.p[1]], [c.p[0], H, c.p[1]], EDGE_SOFT, Math.min(cut, H), wallBucket.get(tall)!);
   }
+  if (mark >= 0) decorLines(lines, mark);
   // a joint between walls of different heights: the taller wall's end stands free above the lower one, so
   // its top edge runs across the joint and its edges come down to the lower wall's top (#417)
-  for (const j of outline.joints) {
+  const joints = decorLast(outline.joints, (j) => j.walls.every(decorWall));
+  mark = -1;
+  for (const [i, j] of joints.list.entries()) {
+    if (i === joints.from) mark = lines.f.length;
     const [lo, hi] = j.walls;
     const ya = [topOfWall(lo, j.a), topOfWall(hi, j.a)];
     const yb = [topOfWall(lo, j.b), topOfWall(hi, j.b)];
@@ -696,7 +723,14 @@ export function buildFloorGeometry(
       if (high - low > 0.01) lines.segSplit([p[0], low, p[1]], [p[0], high, p[1]], EDGE_SOFT, cut, b);
     }
   }
-  for (const list of spans.values()) for (const sp of list) if (!sp.cont) pushOpeningLines(lines, sp, cut, openAt);
+  if (mark >= 0) decorLines(lines, mark);
+  const spanLists = decorLast([...spans], ([w]) => decorWall(w));
+  mark = -1;
+  for (const [i, [, list]] of spanLists.list.entries()) {
+    if (i === spanLists.from) mark = lines.f.length;
+    for (const sp of list) if (!sp.cont) pushOpeningLines(lines, sp, cut, openAt);
+  }
+  if (mark >= 0) decorLines(lines, mark);
 
   // ---------------------------------------------------------------- furniture and shadows
   const shadow = buildShadow(outline.edges, floor.rooms, spans);
@@ -725,6 +759,10 @@ export function buildFloorGeometry(
       cutAbove(wallBuf, start, cut, FURN_OFFSET);
       cutLinesAbove(lines, l0, cut, FURN_OFFSET);
     }
+    if (decorRooms.size && inDecor(f.x, f.z)) {
+      wallBuf.f.fill(DECOR_OFFSET, start * 3);
+      decorLines(lines, l0 * 2);
+    }
     furnitureTris.push({ id: f.id, start, end: wallBuf.count });
   }
 
@@ -739,6 +777,7 @@ export function buildFloorGeometry(
     buckets,
     openings,
     walls2d: walls,
+    wallDecor: walls.map(decorWall),
     openRooms,
     wallBuckets: walls.map((w) => wallBucket.get(w)!),
     furnitureTris,
@@ -1106,4 +1145,45 @@ function ccw(points: Vec2[]): Vec2[] {
     a += p[0] * q[1] - q[0] * p[1];
   }
   return a >= 0 ? points : [...points].reverse();
+}
+
+/** How far a lid sits below its walls' top: the walls' tops stay in front of it. */
+const LID_DROP = 0.01;
+
+/**
+ * A lid over rooms at the top of their walls, in the slab's colour: decoration (a floor the user does not live on) is
+ * not to be looked into from above; where it reaches past the floor above, it reads as a flat roof.
+ */
+export function buildLid(rooms: Room[], height: number): BufferGeometry {
+  const buf = new GeoBuffer();
+  const color = new Color(NEON.slab);
+  const y = height - LID_DROP;
+  for (const room of rooms) {
+    if (room.points.length < 3) continue;
+    const poly = ccw(room.points);
+    for (const [i, j, l] of triangulate(poly)) {
+      const [a, b, c] = [poly[i], poly[j], poly[l]];
+      buf.tri([a[0], y, a[1]], [c[0], y, c[1]], [b[0], y, b[1]], color);
+    }
+  }
+  return buf.geometry();
+}
+
+/** The items of decoration go last (their lines are then of its fold kind from `from` on). */
+function decorLast<T>(items: readonly T[], decor: (item: T) => boolean): { list: T[]; from: number } {
+  const own = items.filter((item) => !decor(item));
+  return { list: [...own, ...items.filter(decor)], from: own.length };
+}
+
+/** The lines from vertex `from` on become decoration's; its walls are never cut, so their cut lines go. */
+function decorLines(lines: LineBuffer, from: number): void {
+  const p = lines.p.splice(from * 3);
+  const c = lines.c.splice(from * 3);
+  const f = lines.f.splice(from);
+  for (let v = 0; v < f.length; v += 2) {
+    if (f[v] >= CUT_OFFSET && f[v] < LOWER_OFFSET) continue;
+    lines.p.push(...p.slice(v * 3, v * 3 + 6));
+    lines.c.push(...c.slice(v * 3, v * 3 + 6));
+    lines.f.push(DECOR_OFFSET, DECOR_OFFSET);
+  }
 }

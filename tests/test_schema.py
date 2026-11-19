@@ -5,6 +5,7 @@ import voluptuous as vol
 
 from custom_components.neonplan3d.schema import (
     ENERGY_SCHEMA,
+    FLOOR_SCHEMA,
     FREE_WALL_SCHEMA,
     FURNITURE_SCHEMA,
     HOLOGRAM_SCHEMA,
@@ -443,3 +444,35 @@ def test_surroundings_from_the_map_are_kept_and_checked() -> None:
     assert picked["hide"] == [0] and picked["flat"] is True
     with pytest.raises(vol.Invalid):
         SETTINGS_SCHEMA({**base, "surroundings": {**surroundings, "hide": [-1]}})
+
+
+FLOOR = {
+    "id": "eg",
+    "name": "EG",
+    "elevation": 0,
+    "height": 2.5,
+    "cut_height": 1.15,
+    "rooms": [],
+    "openings": [],
+    "furniture": [],
+    "placements": [],
+    "background": None,
+}
+
+
+def test_decorative_floor() -> None:
+    # a plan without the flag stays without it; a decorative floor keeps it
+    assert "decorative" not in FLOOR_SCHEMA(FLOOR)
+    assert FLOOR_SCHEMA({**FLOOR, "decorative": True})["decorative"] is True
+    with pytest.raises(vol.Invalid):
+        FLOOR_SCHEMA({**FLOOR, "decorative": "yes"})
+
+
+def test_decorative_room_and_outdoor_area() -> None:
+    assert "decorative" not in ROOM_SCHEMA(ROOM)
+    assert ROOM_SCHEMA({**ROOM, "decorative": True})["decorative"] is True
+    with pytest.raises(vol.Invalid):
+        ROOM_SCHEMA({**ROOM, "decorative": 1})
+    area = {"id": "g", "type": "lawn", "points": [[0, 0], [4, 0], [4, 4]]}
+    assert "decorative" not in OUTDOOR_SCHEMA(area)
+    assert OUTDOOR_SCHEMA({**area, "decorative": True})["decorative"] is True

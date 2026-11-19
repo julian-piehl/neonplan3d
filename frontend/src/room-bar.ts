@@ -2,7 +2,7 @@
 // lights that are on, an open window or door, a player that plays – and the favourites in front of them. What a room holds
 // is worked out once per registry and plan; a state change only reads the states again.
 import { favoriteCall, fromCelsius, kindOf, roomClimateValue, roomPanelEntities } from "./devices.ts";
-import { zonesOf, type Building, type Floor, type Room } from "./model.ts";
+import { liveFloors, liveZones, type Building, type Floor, type Room } from "./model.ts";
 import { roofWindowsOver } from "./solar.ts";
 import type { HomeAssistant } from "./types.ts";
 
@@ -49,14 +49,15 @@ function roomEntities(hass: HomeAssistant, b: Building, floor: Floor, room: Room
   return ids;
 }
 
-/** The tiles of one floor, or of every floor from the bottom up (the house view). */
+/** The tiles of one floor, or of every floor from the bottom up (the house view); decorative floors have none. */
 export function roomTiles(hass: HomeAssistant, b: Building, floorId: string | null): RoomTile[] {
-  const floors = floorId ? b.floors.filter((f) => f.id === floorId) : [...b.floors].sort((p, q) => p.elevation - q.elevation);
+  const live = liveFloors(b);
+  const floors = floorId ? live.filter((f) => f.id === floorId) : live.sort((p, q) => p.elevation - q.elevation);
   const out: RoomTile[] = [];
   for (const floor of floors)
-    for (const [i, room] of zonesOf(floor).entries()) {
+    for (const [i, room] of liveZones(floor).entries()) {
       // several areas of one garden (front and back lawn with the same area and name) share one tile, as in the room chips
-      if (!room.name?.trim() || (room.outdoor && zonesOf(floor).findIndex((x) => x.outdoor && x.area_id === room.area_id && x.name === room.name) < i)) continue;
+      if (!room.name?.trim() || (room.outdoor && liveZones(floor).findIndex((x) => x.outdoor && x.area_id === room.area_id && x.name === room.name) < i)) continue;
       const ids = roomEntities(hass, b, floor, room);
       const lights = ids.filter((id) => kindOf(id) === "light" && hass.states[id]);
       const lightsOn = lights.filter((id) => hass.states[id].state === "on");

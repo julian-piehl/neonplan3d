@@ -64,3 +64,16 @@ test("room intents: vacuum and everything off, for a named room, here or there",
   assert.equal(saysThere("Mach da das Licht aus", "de"), true);
   assert.equal(withoutThere("Mach da das Licht aus", "de"), "Mach das Licht aus");
 });
+
+test("a decorative floor and its rooms are no place to go", () => {
+  const rented = { ...building, floors: building.floors.map((f) => (f.id === "eg" ? { ...f, decorative: true } : f)) };
+  assert.equal(findPlace("Zeig mir das Wohnzimmer", rented), null);
+  assert.equal(findPlace("Erdgeschoss", rented), null);
+  assert.deepEqual(findPlace("Kinderzimmer", rented), { kind: "room", floorId: "og", roomId: "kz", name: "Kinderzimmer" });
+});
+
+test("a decorative room is no place to go", () => {
+  const rented = { ...building, floors: building.floors.map((f) => (f.id === "og" ? { ...f, rooms: f.rooms.map((r) => ({ ...r, decorative: true })) } : f)) };
+  assert.equal(findPlace("Kinderzimmer", rented), null);
+  assert.equal(findPlace("Wohnzimmer", rented)?.name, "Wohnzimmer");
+});
