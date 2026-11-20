@@ -3376,7 +3376,8 @@ export class FloorplanViewer {
       // sits right on it, see placeRoof): a lid at full height floated over the knee walls and stuck out through them,
       // and under the ridge it still showed through the roof
       const decor = this.decorRoomsOf(floor).filter((r) => !roofUnder || !isDecorative(floor) || r.points.length < 3 || roofUnder(...centroid(r.points)) === null);
-      const lid = decor.length ? [new Mesh(buildLid(decor, floor.height), materials.floor)] : [];
+      const above = b.floors.filter((f) => f.elevation > floor.elevation).sort((p, q) => p.elevation - q.elevation)[0];
+      const lid = decor.length ? [new Mesh(buildLid(decor, floor.height, above ? stairHoleParts(b.floors, above) : []), materials.floor)] : [];
       group.add(
         floorMesh,
         ...lid,

@@ -6,7 +6,8 @@
 // nothing. three.js comes from the 3D bundle (passed in).
 
 import type * as THREE from "three";
-import type { Building, Floor, Furniture, Pet, Vec2 } from "../model.ts";
+import type { Building, Floor, Furniture, Pet, Room, Vec2 } from "../model.ts";
+import { isDecorative } from "../model.ts";
 import type { FloorMap, Obstacle } from "../viewer/walk.ts";
 
 /** The three.js classes the pets need, lent by the 3D bundle (it has no ready-made spheres or boxes: shapes are made here). */
@@ -305,13 +306,24 @@ function obstaclesOf(floor: Floor, base: (floor: Floor, f: Furniture) => number)
 /**
  * Where the pets can walk on a floor: through the doors between two rooms that are not reported shut. They live
  * indoors – the front door, a garage door and a floor-length window are no ways for them: the shortest way from room
- * to room led round the outside of the house, through the closed garage door, hedges and fences (#1047).
+ * to room led round the outside of the house, through the closed garage door, hedges and fences (#1047). Nor are the
+ * doors into decoration (a neighbour's flat, the stairwell): they live in the flat of their own.
  */
 export function petMap(Maps: typeof FloorMap, plan: Building, floor: Floor, shut: ReadonlySet<string>, obstacles: readonly Obstacle[]): FloorMap {
   const doors = floor.openings.filter((o) => o.type === "door" && !shut.has(o.id));
   const map = new Maps(plan, { ...floor, openings: doors }, obstacles);
-  const outer = new Set(map.doors.filter((d) => !(map.roomAt(d.p[0]) && map.roomAt(d.p[1]))).map((d) => d.id));
+  const outer = new Set(map.doors.filter((d) => !(ownRoom(map.roomAt(d.p[0])) && ownRoom(map.roomAt(d.p[1])))).map((d) => d.id));
   return outer.size ? new Maps(plan, { ...floor, openings: doors.filter((o) => !outer.has(o.id)) }, obstacles) : map;
+}
+
+/** A room the pets may be in: one of the home's own, not decoration. */
+function ownRoom(r: Room | null | undefined): r is Room {
+  return !!r && r.decorative !== true;
+}
+
+/** Whether a point lies in a decorative room of a floor. */
+function decorAt(floor: Floor, p: Vec2): boolean {
+  return floor.rooms.some((r) => r.points.length >= 3 && r.decorative === true && pointIn(p, r.points));
 }
 
 function rugsOf(floor: Floor): Rug[] {
@@ -370,7 +382,7 @@ function spotsFor(floor: Floor, kind: Pet["kind"], map: FloorMap): Spot[] {
       // free in the room (the back usually stands at a wall), else the side towards the room's middle
       const free = (s: number) => {
         const q = along(f, s * (f.d / 2 + 0.35));
-        return !map.blocked(q) && !!map.roomAt(q);
+        return !map.blocked(q) && ownRoom(map.roomAt(q));
       };
       let side = 1;
       if (!free(1) && free(-1)) side = -1;
@@ -395,7 +407,8 @@ function spotsFor(floor: Floor, kind: Pet["kind"], map: FloorMap): Spot[] {
       } else out.push({ p: along(f, side * (f.d / 2 + (kind === "dog" ? 0.5 : 0.35))), y: 0, approach: null, face: face + (kind === "dog" ? Math.PI / 2 : 0), sleep: bed });
     } else if (t === "rug") out.push({ p: [f.x, f.z], y: 0, approach: null, face: null, sleep: false });
   }
-  return out;
+  // a place in decoration is none of theirs
+  return out.filter((sp) => !decorAt(floor, sp.p));
 }
 
 /**
@@ -463,6 +476,8 @@ function stairLinks(b: Building): Link[] {
   for (let i = 0; i < floors.length - 1; i++) {
     const lower = floors[i];
     const upper = floors[i + 1];
+    // no way up to or down from a decorative floor
+    if (isDecorative(lower) || isDecorative(upper)) continue;
     const rise = upper.elevation - lower.elevation;
     for (const f of lower.furniture) {
       const way = stairWay(itemOf(f.type), f.w, f.d);
@@ -478,14 +493,11 @@ function stairLinks(b: Building): Link[] {
       const z0 = way[1][1];
       const z1 = way[way.length - 2][1];
       const side = f.w / 2 + 0.35;
-      out.push({
-        lower: lower.id,
-        upper: upper.id,
-        pts: pts.slice(1, -1),
-        // (beside: at the first steps, a little up the stair, where a wall in front leaves room)
-        foot: [[pts[0][0], pts[0][2]], ...[0, -0.35, -0.7].flatMap((k) => [W(-side, z0 + k), W(side, z0 + k)])],
-        top: [[pts[pts.length - 1][0], pts[pts.length - 1][2]], ...[0, 0.35, 0.7].flatMap((k) => [W(-side, z1 + k), W(side, z1 + k)])],
-      });
+      // (beside: at the first steps, a little up the stair, where a wall in front leaves room); none in decoration –
+      // a stair from or into it (the stairwell) is no way for them
+      const foot = [[pts[0][0], pts[0][2]] as Vec2, ...[0, -0.35, -0.7].flatMap((k) => [W(-side, z0 + k), W(side, z0 + k)])].filter((p) => !decorAt(lower, p));
+      const top = [[pts[pts.length - 1][0], pts[pts.length - 1][2]] as Vec2, ...[0, 0.35, 0.7].flatMap((k) => [W(-side, z1 + k), W(side, z1 + k)])].filter((p) => !decorAt(upper, p));
+      if (foot.length && top.length) out.push({ lower: lower.id, upper: upper.id, pts: pts.slice(1, -1), foot, top });
     }
   }
   return out;
@@ -565,7 +577,7 @@ export function startPets(ctx: PetsContext): PetsController {
     let info = floors.get(id);
     if (!info) {
       const floor = plan.floors.find((f) => f.id === id)!;
-      info = { floor, map: petMap(ctx.FloorMap, plan, floor, ctx.closedDoors?.() ?? new Set<string>(), obstaclesOf(floor, ctx.base)), rooms: floor.rooms.filter((r) => r.points.length >= 3), spots: new Map(), rugs: rugsOf(floor) };
+      info = { floor, map: petMap(ctx.FloorMap, plan, floor, ctx.closedDoors?.() ?? new Set<string>(), obstaclesOf(floor, ctx.base)), rooms: floor.rooms.filter((r) => r.points.length >= 3 && ownRoom(r)), spots: new Map(), rugs: rugsOf(floor) };
       floors.set(id, info);
     }
     return info;
@@ -584,7 +596,8 @@ export function startPets(ctx: PetsContext): PetsController {
   };
 
   const floorFor = (b: Building, pet: Pet): Floor | undefined => {
-    const withRooms = b.floors.filter((f) => f.rooms.some((r) => r.points.length >= 3));
+    // a floor of the home's own: a pet set on a decorative one moves to the nearest of those
+    const withRooms = b.floors.filter((f) => !isDecorative(f) && f.rooms.some((r) => r.points.length >= 3 && ownRoom(r)));
     return withRooms.find((f) => f.id === pet.floor_id) ?? [...withRooms].sort((x, y) => Math.abs(x.elevation) - Math.abs(y.elevation))[0];
   };
 
@@ -909,7 +922,8 @@ export function startPets(ctx: PetsContext): PetsController {
     for (const pet of pets) {
       // a pet that went up or down the stairs stays on that floor
       const prev = before.get(pet.id);
-      const floor = (prev && prev.pet.floor_id === pet.floor_id ? b.floors.find((f) => f.id === prev.floorId) : undefined) ?? floorFor(b, pet);
+      const back = prev && prev.pet.floor_id === pet.floor_id ? b.floors.find((f) => f.id === prev.floorId) : undefined;
+      const floor = (back && !isDecorative(back) ? back : undefined) ?? floorFor(b, pet);
       if (!floor || !viewer.floorMap.get(floor.id) || !floorInfo(floor.id).rooms.length) continue;
       const old = prev;
       const a: Animal = {

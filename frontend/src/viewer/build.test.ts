@@ -485,6 +485,22 @@ test("a lid covers the rooms just under their walls' top, facing up", () => {
   }
 });
 
+test("decoration: its lid stays open where the floor above is (stairs reaching up through it)", () => {
+  const room = rect("r", 0, 0, 4, 4);
+  const hole: Vec2[] = [[1, 1], [2, 1], [2, 3], [1, 3]];
+  // twice the triangles' areas: the room without the stair's opening
+  const area = (geo: ReturnType<typeof buildLid>) => {
+    const p = geo.getAttribute("position");
+    let sum = 0;
+    for (let t = 0; t < p.count; t += 3) sum += Math.abs((p.getZ(t + 1) - p.getZ(t)) * (p.getX(t + 2) - p.getX(t)) - (p.getX(t + 1) - p.getX(t)) * (p.getZ(t + 2) - p.getZ(t)));
+    return sum / 2;
+  };
+  assert.ok(Math.abs(area(buildLid([room], 2.5)) - 16) < 1e-6);
+  assert.ok(Math.abs(area(buildLid([room], 2.5, [hole])) - 14) < 0.05);
+  // an opening beside the room leaves it whole
+  assert.ok(Math.abs(area(buildLid([room], 2.5, [hole.map(([x, z]) => [x + 10, z] as Vec2)])) - 16) < 1e-6);
+});
+
 test("decoration: walls touching only its rooms, their lines and its furniture are of fold kind 5; a shared wall is not", () => {
   const DECOR = 80;
   const table: Furniture = { id: "t", type: "table", x: 5.5, z: 1.5, rotation: 0, w: 1, d: 1, h: 0.75, variant: null };

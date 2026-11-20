@@ -304,20 +304,7 @@ export function buildFloorGeometry(
     const poly = ccw(room.points);
     const look = FLOOR_LOOK[room.floor_material] ?? FLOOR_LOOK.wood;
     const top = new Color(look.color);
-    // an opening snapped to the room's edge is still cut, a few millimetres in from it
-    // an opening across a room line is cut in every room it covers: here, the part inside this room (#353)
-    // the openings are clipped one by one and only then merged: an opening joined with the stairs' own hole before
-    // (overlapping, no longer convex) and reaching past the room was not cut at all (#375)
-    // one only within a few centimetres of the edge is clipped as well when it can be: a corner just past the room
-    // line (stairs below reaching 2.5 cm beyond the wall's face) crossed the floor's outline, and the floor was not
-    // cut at all (#813)
-    const parts = holes.flatMap((h) => {
-      if (holeInRoom(h, poly) && (!isConvex(h) || holeInRoom(h, poly, 0.002))) return [h];
-      if (!isConvex(h)) return [];
-      const part = dropRepeats(clipConvex(poly, h));
-      return part.length >= 3 && Math.abs(polygonArea(part)) > 0.01 ? [ccw(part)] : [];
-    });
-    const inside = mergeHoles(parts).map((h) => insetHole(ccw(h), 0.003));
+    const inside = roomHoles(poly, holes);
     cutHoles.push(...inside);
     const all = [...poly, ...inside.flat()];
     const start = floorBuf.count;
@@ -1154,19 +1141,43 @@ const LID_DROP = 0.01;
  * A lid over rooms at the top of their walls, in the slab's colour: decoration (a floor the user does not live on) is
  * not to be looked into from above; where it reaches past the floor above, it reads as a flat roof.
  */
-export function buildLid(rooms: Room[], height: number): BufferGeometry {
+export function buildLid(rooms: Room[], height: number, holes: readonly Vec2[][] = []): BufferGeometry {
   const buf = new GeoBuffer();
   const color = new Color(NEON.slab);
   const y = height - LID_DROP;
   for (const room of rooms) {
     if (room.points.length < 3) continue;
     const poly = ccw(room.points);
-    for (const [i, j, l] of triangulate(poly)) {
-      const [a, b, c] = [poly[i], poly[j], poly[l]];
+    // open where the floor above is (stairs, a stairwell): a lid across them stood as a plate in the middle of the stair
+    const inside = roomHoles(poly, holes);
+    const all = [...poly, ...inside.flat()];
+    for (const [i, j, l] of triangulate(poly, inside)) {
+      const [a, b, c] = [all[i], all[j], all[l]];
       buf.tri([a[0], y, a[1]], [c[0], y, c[1]], [b[0], y, b[1]], color);
     }
   }
   return buf.geometry();
+}
+
+/**
+ * The openings of a floor (stairs, a stairwell, one by one) cut out of a room's outline (counter-clockwise): the parts
+ * inside it, merged, a few millimetres in.
+ */
+function roomHoles(poly: Vec2[], holes: readonly Vec2[][]): Vec2[][] {
+  // an opening snapped to the room's edge is still cut, a few millimetres in from it
+  // an opening across a room line is cut in every room it covers: here, the part inside this room (#353)
+  // the openings are clipped one by one and only then merged: an opening joined with the stairs' own hole before
+  // (overlapping, no longer convex) and reaching past the room was not cut at all (#375)
+  // one only within a few centimetres of the edge is clipped as well when it can be: a corner just past the room
+  // line (stairs below reaching 2.5 cm beyond the wall's face) crossed the floor's outline, and the floor was not
+  // cut at all (#813)
+  const parts = holes.flatMap((h) => {
+    if (holeInRoom(h, poly) && (!isConvex(h) || holeInRoom(h, poly, 0.002))) return [h];
+    if (!isConvex(h)) return [];
+    const part = dropRepeats(clipConvex(poly, h));
+    return part.length >= 3 && Math.abs(polygonArea(part)) > 0.01 ? [ccw(part)] : [];
+  });
+  return mergeHoles(parts).map((h) => insetHole(ccw(h), 0.003));
 }
 
 /** The items of decoration go last (their lines are then of its fold kind from `from` on). */

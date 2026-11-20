@@ -76,6 +76,9 @@ test("pets stay indoors: only doors between two rooms are ways, never round the 
   assert.ok(way && way.every((p) => p[1] > 0.3 && p[1] < 4.7), "through the house");
   // and not while that door is reported shut
   assert.equal(petMap(FloorMap, { ...plan, floors: [joined] }, joined, new Set(["inner"]), []).path(from, to), null);
+  // nor through a door into decoration (a neighbour's flat, the stairwell)
+  const decor = { ...joined, rooms: [rooms[0], { ...rooms[1], decorative: true }] };
+  assert.equal(petMap(FloorMap, { ...plan, floors: [decor] }, decor, new Set(), []).path(from, to), null);
 });
 
 test("upstairs, a door between rooms drawn a wall's width apart is a way, not a door into the air (#970)", () => {
