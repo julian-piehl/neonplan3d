@@ -136,7 +136,7 @@ import { load3d } from "../load3d.ts";
 import { loadFun } from "../load-fun.ts";
 import { detectionKind, scaleGlow, buildMarkers, cameraMotionSensors, openMoreInfo, setCameraSensors, stateText, toggleEntity } from "../markers.ts";
 import { activeSections, roofUnderAt, sectionAbove, sectionCutsBelow } from "../roof-sections.ts";
-import { centroid, furnitureFootprint, gangEntities, gangsOf, GANG_TYPES, STAIR_TYPES, TECH_TYPES, isLamp, setTerrain, poolFloorY, LAMP_MODEL, LIFT_SPOTS, outdoorGround, pointInPolygon, poolWaterY, spotDepth, surfaceHeight, zonesOf, type Building, type Floor, type Furniture, type Pet, type StartView } from "../model.ts";
+import { centroid, furnitureFootprint, gangEntities, gangsOf, GANG_TYPES, STAIR_TYPES, TECH_TYPES, isDecorative, isLamp, setTerrain, poolFloorY, LAMP_MODEL, LIFT_SPOTS, outdoorGround, pointInPolygon, poolWaterY, spotDepth, surfaceHeight, zonesOf, type Building, type Floor, type Furniture, type Pet, type StartView } from "../model.ts";
 
 import { pathLength, pipePath, pointAlong, type P3 } from "../geometry/runs.ts";
 import { pipePieces, poolAreas, poolNodeAt, poolWallNormal, underBasin, PIPE_IDLE, type PipePiece } from "../pool-runs.ts";
@@ -4437,7 +4437,11 @@ export class Fp3dView3d extends LitElement {
     const v = this.viewer;
     if (!b || !v || this._walk) return;
     const roomId = this.roomId;
-    const withRooms = b.floors.filter((f) => f.rooms.some((r) => r.points.length >= 3));
+    // a floor of the home's own: the walk starts in one's own flat, not in a decorative floor (all of them in a house drawn
+    // as decoration only)
+    const drawn = b.floors.filter((f) => f.rooms.some((r) => r.points.length >= 3));
+    const own = drawn.filter((f) => !isDecorative(f));
+    const withRooms = own.length ? own : drawn;
     const byRoom = roomId ? withRooms.find((f) => f.rooms.some((r) => r.id === roomId)) : undefined;
     const floor = byRoom ?? withRooms.find((f) => f.id === this.floorId) ?? [...withRooms].sort((x, y) => Math.abs(x.elevation) - Math.abs(y.elevation))[0];
     if (!floor) return;

@@ -307,7 +307,11 @@ interface ViewerInternals {
   camera: { position: { set(x: number, y: number, z: number): void; x: number; y: number; z: number }; lookAt(x: number, y: number, z: number): void; fov: number; near: number; updateProjectionMatrix(): void; aspect: number };
   controls: { update(now: number): boolean; view: { target: { x: number; y: number; z: number; set(x: number, y: number, z: number): void }; radius: number; theta: number; phi: number } };
   floorMap: Map<string, { y: number; floor: Floor; mask: { standing: { value: number }; glass: { value: number } } }>;
-  floors: { mask: { standing: { value: number }; glass: { value: number } } }[];
+  floors: {
+    mask: { standing: { value: number }; glass: { value: number }; decor: { value: number } };
+    lid: { visible: boolean } | null;
+    stand: { group: { visible: boolean } } | null;
+  }[];
   labels: HTMLElement;
   renderer: { domElement: HTMLCanvasElement };
   invalidate(): void;
@@ -362,6 +366,10 @@ export class WalkCamera {
       for (const fv of v.floors) {
         fv.mask.standing.value = 0xffff;
         fv.mask.glass.value = 0;
+        // decoration (a neighbour's flat, the stairwell) stands whole and solid as well, open above like the rest
+        fv.mask.decor.value = 1;
+        if (fv.lid) fv.lid.visible = false;
+        if (fv.stand) fv.stand.group.visible = false;
       }
     };
     v.camera.fov = 72;
