@@ -2,7 +2,7 @@
 // what their state looks like. Pure functions (no Lit, no three.js) so they can be tested directly.
 
 import type { Building, Furniture, EntityRef, FenceGate, Floor, LampMount, Opening, Placement, RoofWindow, Room, Vec2 } from "./model.ts";
-import { centroid, outdoorZones, pointInPolygon } from "./model.ts";
+import { centroid, liveContents, outdoorZones, pointInPolygon } from "./model.ts";
 import { isRobotVacuum, packMotion, packScreen } from "./packs.ts";
 import type { HassEntity, HomeAssistant } from "./types.ts";
 
@@ -1433,12 +1433,14 @@ export function floorControls(hass: HomeAssistant, floor: Floor): { lights: stri
     if (kind === "light") lights.add(id);
     else if (kind === "cover" && !DOOR_COVERS.has(String(hass.states[id].attributes.device_class ?? ""))) covers.add(id);
   };
-  for (const room of floor.rooms) {
+  // decoration (a neighbour's flat, the stairwell) is not switched
+  const own = liveContents(floor);
+  for (const room of own.rooms) {
     const hidden = new Set(room.hidden ?? []);
     for (const id of primaryEntities(hass, areaEntities(hass, room.area_id))) if (!hidden.has(id)) add(id);
   }
-  for (const pl of floor.placements) add(pl.entity_id);
-  for (const f of floor.furniture) add(f.entity);
+  for (const pl of own.placements) add(pl.entity_id);
+  for (const f of own.furniture) add(f.entity);
   return { lights: [...lights], covers: [...covers] };
 }
 
@@ -1448,12 +1450,13 @@ export function floorClimates(hass: HomeAssistant, floor: Floor): string[] {
   const add = (id: string | null | undefined) => {
     if (id && id.startsWith("climate.") && hass.states[id]) out.add(id);
   };
-  for (const room of floor.rooms) {
+  const own = liveContents(floor);
+  for (const room of own.rooms) {
     const hidden = new Set(room.hidden ?? []);
     for (const id of areaEntities(hass, room.area_id)) if (!hidden.has(id)) add(id);
   }
-  for (const pl of floor.placements) add(pl.entity_id);
-  for (const f of floor.furniture) add(f.entity);
+  for (const pl of own.placements) add(pl.entity_id);
+  for (const f of own.furniture) add(f.entity);
   return [...out];
 }
 

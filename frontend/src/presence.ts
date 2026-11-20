@@ -4,7 +4,7 @@
 import { areaEntities, entityAreaId, kindOf, openingState, primaryEntities, type OpeningEntities } from "./devices.ts";
 import { translate } from "./i18n.ts";
 import type { Building, Room } from "./model.ts";
-import { centroid, innerPoint, pointInPolygon, zonesOf } from "./model.ts";
+import { centroid, innerPoint, liveContents, pointInPolygon, zonesOf } from "./model.ts";
 import type { HomeAssistant } from "./types.ts";
 
 export interface PersonMarker {
@@ -360,11 +360,11 @@ export function floorCounts(hass: HomeAssistant, building: Building, links: Map<
   for (const floor of building.floors) {
     const lights = new Set<string>();
     // decoration (a neighbour's flat) is not counted: neither its rooms nor what is in them
-    const rooms = floor.rooms.filter((r) => !r.decorative);
+    const { rooms, placements } = liveContents(floor);
     const decor = floor.rooms.filter((r) => r.decorative && r.points.length >= 3);
     // main entities only: a LED strip with 30 segment entities is one light
     for (const room of rooms) for (const id of primaryEntities(hass, areaEntities(hass, room.area_id))) if (kindOf(id) === "light") lights.add(id);
-    for (const pl of floor.placements) if (kindOf(pl.entity_id) === "light" && !decor.some((r) => pointInPolygon([pl.x, pl.z], r.points))) lights.add(pl.entity_id);
+    for (const pl of placements) if (kindOf(pl.entity_id) === "light") lights.add(pl.entity_id);
     const open = floor.openings.filter((o) => {
       if (decor.some((r) => r.id === o.room_id)) return false;
       const l = links.get(o.id);

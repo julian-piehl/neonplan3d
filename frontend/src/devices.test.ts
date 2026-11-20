@@ -659,6 +659,10 @@ test("the central menu switches a floor's lights and blinds, not its garage door
   const c = floorControls(hass, floor);
   assert.deepEqual(c.lights.sort(), ["light.decke", "light.stehlampe"]);
   assert.deepEqual(c.covers, ["cover.rollo"]);
+  // decoration is not switched: not a decorative room's area nor a lamp standing in it, nothing on a decorative floor
+  const decor = { ...floor, rooms: [{ ...floor.rooms[0], decorative: true }, { ...floor.rooms[0], id: "own", area_id: null, points: [[4, 0], [8, 0], [8, 4], [4, 4]] as [number, number][] }] };
+  assert.deepEqual(floorControls(hass, decor), { lights: [], covers: [] });
+  assert.deepEqual(floorControls(hass, { ...floor, decorative: true }), { lights: [], covers: [] });
   assert.deepEqual(favoriteCall("scene.party"), ["scene", "turn_on"]);
   assert.deepEqual(favoriteCall("button.klingel"), ["button", "press"]);
   assert.deepEqual(favoriteCall("switch.bewaesserung"), ["homeassistant", "toggle"]);

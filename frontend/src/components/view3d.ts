@@ -48,7 +48,7 @@ import { neonSignPicture, signLight, signLines } from "../neon-sign.ts";
 import { applianceIdle, applianceOf, type ApplianceKind, binColors, calendarItems, type DayEvent, fetchDayEvents, binDue, binNext, binOut, binOutToggleable, binTagsShown, doorsOf, fetchPickups, FinishedMemory, fridgeOpenTooLong, groupTags, hassCountry, isFinishedState, mailboxPost, nextFridgeCheck, plantThirsty, remainingMinutes, remainingText, servicesDue, setHouseholdCountry, wasteCalendars, isPackPlant, type HouseholdItem, type HouseholdTag, type Pickup } from "../household.ts";
 import { deviceSensors, energySummary, pvWithStrings, stringsPower, fetchSolarRows, fetchTodayChange, fieldLevels, fieldPowers, findConsumers, flowColor, flowSegments, gridPoint, powerSensorFor, readPower, solarCurvePath, solarDayFromStats, type Consumer, type EnergySummary, type StatRow } from "../energy.ts";
 import { fieldFace, fieldSize, roofFaces, roofWindowRoom } from "../solar.ts";
-import { type CustomButton, type EntityRef, DEFAULT_HOLOGRAM, lockAlong, type PoolPipe, type RoofWindow, type SolarField, uid } from "../model.ts";
+import { type CustomButton, type EntityRef, DEFAULT_HOLOGRAM, lockAlong, onDecorativeRoom, type PoolPipe, type RoofWindow, type SolarField, uid } from "../model.ts";
 
 /** A hologram card: the house's balance on the main plant, one plant (a balcony plant) on its own, or a device. */
 /** The unit a meter counts in (m³ when it does not say). */
@@ -5269,7 +5269,8 @@ export class Fp3dView3d extends LitElement {
       const rooms = new Map(zonesOf(floor).map((r) => [r.id, r.name] as const));
       for (const o of floor.openings) {
         const e = this.openingLinks?.get(o.id);
-        if (!e) continue;
+        // decoration (a neighbour's window) is no window of one's own to report
+        if (!e || onDecorativeRoom(b, floor.id, o.room_id)) continue;
         const kind = o.type === "garage" ? "garage" : o.type === "door" ? "door" : "window";
         // open as the 3D view shows it: the sash or door turned, a garage door up; tilted on its own
         const s = openingState(hass, e, o.type);

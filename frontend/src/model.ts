@@ -1008,6 +1008,21 @@ export function liveZones(floor: Floor): Room[] {
   return isDecorative(floor) ? [] : zonesOf(floor).filter((r) => r.decorative !== true);
 }
 
+/**
+ * What of a floor belongs to the home: its rooms of its own, and the placed devices and furniture standing outside
+ * decoration (nothing on a decorative floor). What switches or counts a floor's devices goes by it.
+ */
+export function liveContents(floor: Floor): { rooms: Room[]; placements: Placement[]; furniture: Furniture[] } {
+  if (isDecorative(floor)) return { rooms: [], placements: [], furniture: [] };
+  const decor = floor.rooms.filter((r) => r.decorative === true && r.points.length >= 3);
+  const free = (p: Vec2) => !decor.some((r) => pointInPolygon(p, r.points));
+  return {
+    rooms: floor.rooms.filter((r) => r.decorative !== true),
+    placements: floor.placements.filter((pl) => free([pl.x, pl.z])),
+    furniture: floor.furniture.filter((f) => free([f.x, f.z])),
+  };
+}
+
 /** Whether a tap, search hit or voice command aims at decoration: a decorative floor, or a decorative room on it. */
 export function onDecorativeRoom(b: Building, floorId: string | null | undefined, roomId: string | null | undefined): boolean {
   if (onDecorativeFloor(b, floorId)) return true;
